@@ -7,7 +7,8 @@ const { Store } = require('../lib/db');
 const { toCli, RestClient, SimRouter } = require('../lib/routeros');
 const P = require('./provision');
 const { Mpesa, normalizePhone, RESULT_CODES } = require('./mpesa');
-const { deliver } = require('./notify');
+const { deliver, waLink } = require('./notify');
+const fs = require('fs');
 const seed = require('./seed');
 
 const PORT = Number(process.env.ONEISP_PORT || 8080);
@@ -20,6 +21,7 @@ function settings() {
   const s = db.obj('settings', seed.DEFAULT_SETTINGS);
   for (const k of ['smsTemplates', 'mpesa', 'messaging', 'smartolt']) s[k] = { ...seed.DEFAULT_SETTINGS[k], ...(s[k] || {}) };
   for (const k of ['sms', 'whatsapp']) s.messaging[k] = { ...seed.DEFAULT_SETTINGS.messaging[k], ...(s.messaging[k] || {}) };
+  if (!['link', 'meta'].includes(s.messaging.whatsapp.provider)) s.messaging.whatsapp.provider = 'link'; // Twilio/simulate were removed
   return s;
 }
 const now = () => new Date();
@@ -28,6 +30,28 @@ const rand = (n, chars = 'abcdefghjkmnpqrstuvwxyz23456789') => Array.from(crypto
 const need = (v, msg) => { if (v === undefined || v === null || v === '') throw new HttpError(400, msg); return v; };
 const hashPw = p => crypto.createHash('sha256').update('oneisp:' + p).digest('hex');
 const fmtMac = m => (m ? String(m).toUpperCase().replace(/[^0-9A-F]/g, '').match(/.{1,2}/g).join(':') : '');
+
+// ---------------------------------------------------------------- local config (keys stay on this PC)
+// config.local.json (git-ignored) is written by `node setup.js` and applied on every start.
+const LOCAL_CONFIG = path.join(__dirname, '..', 'config.local.json');
+function applyLocalConfig() {
+  if (!fs.existsSync(LOCAL_CONFIG)) return false;
+  let c;
+  try { c = JSON.parse(fs.readFileSync(LOCAL_CONFIG, 'utf8')); } catch (e) { console.error(`config.local.json is not valid JSON: ${e.message}`); return false; }
+  const s = settings();
+  // apply only when the file changed, so later edits in Settings are not overwritten on every restart
+  const hash = crypto.createHash('sha1').update(JSON.stringify(c)).digest('hex');
+  if (s.localConfigHash === hash) return true;
+  s.localConfigHash = hash;
+  if (c.mpesa) {
+    s.mpesa = { ...s.mpesa, ...Object.fromEntries(Object.entries(c.mpesa).map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v])) };
+    if (s.mpesa.consumerKey && s.mpesa.consumerSecret && !c.mpesa.mode && s.mpesa.mode === 'simulate') s.mpesa.mode = 'sandbox';
+  }
+  if (c.messaging) s.messaging = { ...s.messaging, ...c.messaging, sms: { ...s.messaging.sms, ...(c.messaging.sms || {}) }, whatsapp: { ...s.messaging.whatsapp, ...(c.messaging.whatsapp || {}) } };
+  db.save();
+  return true;
+}
+const localConfigLoaded = applyLocalConfig();
 
 // ---------------------------------------------------------------- auth
 const sessions = new Map();
@@ -136,7 +160,7 @@ function render(tpl, c, extra = {}) {
   };
   return String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
 }
-// Queue a message and deliver it in the background (SMS via Africa's Talking, WhatsApp via Meta/Twilio, or simulated).
+// Queue a message and deliver it in the background (SMS via Africa's Talking, WhatsApp via wa.me links or the Meta Cloud API).
 // `to` is a phone number or { sms, whatsapp } numbers; channel 'sms' | 'whatsapp' | 'both' (default from settings).
 function sendSms(to, message, customerId, kind = 'manual', channel) {
   const m = settings().messaging;
@@ -154,7 +178,7 @@ function sendSms(to, message, customerId, kind = 'manual', channel) {
   return recs[0] || null;
 }
 const numbersOf = c => ({ sms: c.phone, whatsapp: c.whatsapp || c.phone });
-const realProvider = ch => settings().messaging[ch]?.provider && settings().messaging[ch].provider !== 'simulate';
+const realProvider = ch => !!settings().messaging[ch]?.provider && settings().messaging[ch].provider !== 'simulate';
 // The chosen channel for hotspot codes, falling back to whichever channel has a real provider configured.
 function hotspotChannel() {
   const want = settings().messaging.hotspotChannel || 'whatsapp';
@@ -858,7 +882,8 @@ const FULFIL = {
     delete c._profileChanged;
     const via = hotspotChannel();
     sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site.name, receipt }), c.id, 'hotspot-code', via);
-    return { username: c.username, password: c.password, code: c.username, expiresAt: c.expiresAt, sentVia: via, message: `Paid (${receipt}). Your WiFi code is ${c.username} - also sent to ${rec.phone} by ${via}.` };
+    const selfMsg = `${settings().companyName} WiFi code: ${c.username} (valid until ${new Date(c.expiresAt).toLocaleString()}). M-Pesa ref ${receipt}.`;
+    return { username: c.username, password: c.password, code: c.username, expiresAt: c.expiresAt, sentVia: via, whatsappLink: waLink(rec.phone, selfMsg), message: `Paid (${receipt}). Your WiFi code is ${c.username} - also sent to ${rec.phone} by ${via}.` };
   },
 };
 
@@ -1188,6 +1213,7 @@ process.on('SIGTERM', () => { db.flush(); process.exit(0); });
 app.listen(PORT, HOST, () => {
   const st = settings();
   console.log(`OneISP simulator running on http://localhost:${PORT}  (login: admin / admin)`);
+  console.log(`  Local config: ${localConfigLoaded ? 'config.local.json loaded' : 'none (run "node setup.js" to enter your Daraja keys)'}`);
   console.log(`  M-Pesa: ${st.mpesa.mode.toUpperCase()}${st.mpesa.mode === 'simulate' ? ' (no real prompts - Settings > M-Pesa)' : ` shortcode ${st.mpesa.shortcode}, callback ${st.mpesa.callbackBase || 'none (polling)'}`}`);
   console.log(`  SMS: ${st.messaging.sms.provider}   WhatsApp: ${st.messaging.whatsapp.provider}   hotspot codes by: ${hotspotChannel()}`);
 });

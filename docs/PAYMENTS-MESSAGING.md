@@ -19,6 +19,10 @@ All keys are entered in **OneISP → Settings**. They are saved in `data/oneisp.
 
 ## 1. M-Pesa (Safaricom Daraja sandbox)
 
+**Quickest way:** the first time you double-click `start-windows.bat` it asks for your **Consumer Key** and **Consumer Secret**. Paste them and press Enter; shortcode `174379` and the sandbox passkey are filled in for you. They are saved in `config.local.json` on your PC (git-ignored, never uploaded), M-Pesa switches to **sandbox**, and the keys are checked with Safaricom on the spot. To change them later, run `node setup.js` again (or edit them in Settings).
+
+Or do it by hand:
+
 1. Log in at https://developer.safaricom.co.ke → **My Apps** and create an app (or use your existing one) with *Lipa Na M-Pesa Sandbox* and *M-Pesa Sandbox* enabled.
 2. In OneISP → **Settings → M-Pesa**, fill in:
    - **Mode:** `Daraja sandbox`
@@ -86,17 +90,16 @@ If the same number buys again, it keeps the same code. The time is added on, and
 
 ## 3. WhatsApp
 
-### Option A: Twilio WhatsApp sandbox (easiest)
+### Option A: Click-to-send (free, no account) - the default
 
-1. Create a free account at https://www.twilio.com and open **Messaging → Try it out → Send a WhatsApp message**.
-2. From your WhatsApp, send the shown `join <word-word>` message to **+1 415 523 8886**. Every recipient must do this once.
-3. In OneISP → Settings → Messaging, set:
-   - **WhatsApp provider:** Twilio
-   - **Account SID** and **Auth token:** from the Twilio console
-   - **Twilio WhatsApp number:** `+14155238886`
-4. Enter your number under **Save & send test**. The message arrives in WhatsApp.
+Nothing to sign up for. OneISP builds a `https://wa.me/<number>?text=<message>` link for every WhatsApp message:
 
-### Option B: Meta WhatsApp Cloud API
+- **SMS & WhatsApp** page and the customer **Messages** tab: each message has a green **Send in WhatsApp** button. It opens WhatsApp (phone app or web.whatsapp.com) on the customer's chat with the text typed in, and you press Send.
+- **Hotspot page**: after paying, the customer sees their code plus a **Save code to my WhatsApp** button. It opens their own WhatsApp with the code ready, so they can keep it.
+
+It's real WhatsApp, but a person presses Send. For fully automatic sending, use Option B.
+
+### Option B: Meta WhatsApp Cloud API (free, automatic)
 
 1. Go to https://developers.facebook.com → create an app → add **WhatsApp**. You get a free test number.
 2. In *API Setup*, add your phone as a recipient, then copy the **Phone number ID** and the **temporary access token** (it lasts 24h; create a system-user token for a permanent one).
@@ -139,5 +142,4 @@ If the same number buys again, it keeps the same code. The time is added on, and
 | STK sent but nothing on your phone | Use a Safaricom line. The sandbox is sometimes slow, so wait 30–60s. The test number 254708374149 never shows a prompt |
 | Stays *pending* for 3 minutes, then *failed: timeout* | The customer didn't answer, or the sandbox was busy. Click *Check now* on the row |
 | WhatsApp `failed: ... 131047` (Meta) | Outside the 24h window. Use a template |
-| WhatsApp `failed: ... 63015/63016` (Twilio) | The recipient hasn't sent `join …` to the sandbox |
 | `Cannot reach sandbox.safaricom.co.ke` | No internet on the PC, or a firewall/proxy is blocking it |

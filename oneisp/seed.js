@@ -18,9 +18,9 @@ const DEFAULT_SETTINGS = {
   },
   // Message delivery. provider "simulate" only writes to the outbox.
   messaging: {
-    defaultChannel: 'sms', hotspotChannel: 'whatsapp',
+    defaultChannel: 'whatsapp', hotspotChannel: 'whatsapp',
     sms: { provider: 'simulate', sandbox: true, username: 'sandbox', apiKey: '', senderId: '' },
-    whatsapp: { provider: 'simulate', token: '', phoneNumberId: '', apiVersion: 'v21.0', template: '', templateLang: 'en_US', templateHasParam: false, twilioSid: '', twilioToken: '', twilioFrom: '+14155238886' },
+    whatsapp: { provider: 'link', token: '', phoneNumberId: '', apiVersion: 'v21.0', template: '', templateLang: 'en_US', templateHasParam: false }, // link = free wa.me click-to-send, meta = WhatsApp Cloud API
   },
   smsTemplates: {
     welcome: 'Welcome to {company}, {name}! Account {account}. Username {username} password {password}. Package {package} expires {expiry}. Pay via paybill {paybill} acc {account}.',

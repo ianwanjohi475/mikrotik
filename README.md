@@ -24,10 +24,11 @@ Every change OneISP makes to a router is shown as the **exact RouterOS command**
 
 ## Start
 
-Windows: double-click **`start-windows.bat`**. Or from a terminal in this folder:
+Windows: double-click **`start-windows.bat`**. The first time, it asks for your Safaricom Daraja keys and saves them only on your PC, in `config.local.json`, which is never uploaded. Or from a terminal in this folder:
 
 ```bash
 npm start            # both apps
+npm run setup        # enter / change your Daraja (M-Pesa) keys
 npm run oneisp       # only OneISP  (port 8080)
 npm run smartolt     # only SmartOLT (port 4000)
 npm run reset        # delete data/ (the .db files) -> demo data is re-created next start
@@ -61,7 +62,7 @@ To go live, follow [`docs/MIKROTIK-LAB.md`](docs/MIKROTIK-LAB.md). In short:
 Everything starts **simulated**. You can switch to real sandbox services, all set up in OneISP → Settings:
 
 - **M-Pesa (Safaricom Daraja):** STK push (PIN prompt on the phone), status polling so it works without a public URL, callbacks, and C2B paybill with an allocate option for unknown accounts.
-- **WhatsApp (Twilio sandbox or Meta Cloud API) and SMS (Africa's Talking sandbox):** welcome, payment, reminder and credential messages, and **hotspot codes sent by WhatsApp after payment**.
+- **WhatsApp (free click-to-send links, or the free Meta Cloud API) and SMS (Africa's Talking sandbox):** welcome, payment, reminder and credential messages, and **hotspot codes sent by WhatsApp after payment**.
 
 Step by step: [`docs/PAYMENTS-MESSAGING.md`](docs/PAYMENTS-MESSAGING.md).
 

@@ -1,4 +1,4 @@
-// Message delivery: SMS (Africa's Talking) and WhatsApp (Meta Cloud API or Twilio), or "simulate" (outbox only).
+// Message delivery: SMS (Africa's Talking) and WhatsApp (free wa.me click-to-send links, or the Meta WhatsApp Cloud API).
 const { normalizePhone } = require('./mpesa');
 
 const e164 = p => { try { return normalizePhone(p); } catch { return String(p || '').replace(/[^0-9]/g, ''); } };
@@ -41,19 +41,15 @@ async function sendWhatsApp(cfg, to, text) {
     });
     return { status: `sent via WhatsApp Cloud API${cfg.template ? ' (template ' + cfg.template + ')' : ''}`, providerId: j.messages?.[0]?.id };
   }
-  if (cfg.provider === 'twilio') {
-    const j = await post(`https://api.twilio.com/2010-04-01/Accounts/${cfg.twilioSid}/Messages.json`, {
-      auth: `${cfg.twilioSid}:${cfg.twilioToken}`,
-      form: { From: `whatsapp:${cfg.twilioFrom || '+14155238886'}`, To: `whatsapp:+${e164(to)}`, Body: text },
-    });
-    return { status: `sent via Twilio WhatsApp (${j.status})`, providerId: j.sid };
-  }
-  return { status: 'NOT SENT - WhatsApp provider is "simulate" (Settings > Messaging)' };
+  // Free option: no API. The message gets a wa.me link; opening it starts WhatsApp with the text ready to send.
+  return { status: 'READY - click "Send in WhatsApp" to send it from your WhatsApp', link: waLink(to, text) };
 }
+
+const waLink = (to, text) => `https://wa.me/${e164(to)}?text=${encodeURIComponent(text)}`;
 
 // channel: 'sms' | 'whatsapp'
 async function deliver(messaging, channel, to, text) {
   return channel === 'whatsapp' ? sendWhatsApp(messaging.whatsapp || {}, to, text) : sendSms(messaging.sms || {}, to, text);
 }
 
-module.exports = { deliver };
+module.exports = { deliver, waLink };

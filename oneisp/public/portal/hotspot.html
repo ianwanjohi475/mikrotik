@@ -22,7 +22,13 @@ async function post(u, b) { const r = await fetch(u, { method: 'POST', headers: 
 function loginRouter(u, p, exp, extra = '') {
   msg(`<div style="font-size:15px">You're connected!</div><div class="code">${esc(u)}</div>${exp ? `Valid until <b>${new Date(exp).toLocaleString()}</b><br>` : ''}${extra}`, 'ok');
   // Opened from a MikroTik hotspot: post the code back to the router to log in.
-  if (q.login) { const f = $('#login'); f.action = q.login; f.username.value = u; f.password.value = p; f.dst.value = q.dst || 'http://neverssl.com'; setTimeout(() => f.submit(), 2500); }
+  // Opened from a MikroTik hotspot: post the code to the router (after a short countdown so the code can be saved first).
+  if (q.login) {
+    const f = $('#login'); f.action = q.login; f.username.value = u; f.password.value = p; f.dst.value = q.dst || 'http://neverssl.com';
+    $('#msg').insertAdjacentHTML('beforeend', '<button id="goNow">Connect now (<span id="cd">8</span>)</button>');
+    let n = 8; const tm = setInterval(() => { n--; const cd = $('#cd'); if (cd) cd.textContent = n; if (n <= 0) { clearInterval(tm); f.submit(); } }, 1000);
+    $('#goNow').onclick = () => { clearInterval(tm); f.submit(); };
+  }
 }
 fetch('/api/portal/site/' + (q.site || 1)).then(r => r.json()).then(d => {
   if (d.error) return msg(esc(d.error), 'bad');
@@ -40,7 +46,7 @@ $('#payBtn').onclick = async () => {
     let t = await post('/api/portal/hotspot/pay', { siteId: q.site || 1, packageId: pick, phone: $('#phone').value, mac: q.mac, ip: q.ip });
     msg(`<b>Check your phone</b> and enter your M-Pesa PIN.<br><span class="muted">${esc(t.message)}</span><div class="spin"></div>`);
     for (let i = 0; i < 70 && t.status === 'pending'; i++) { await new Promise(r => setTimeout(r, 3000)); t = await (await fetch('/api/portal/txn/' + t.id)).json(); }
-    if (t.status === 'success') loginRouter(t.result.username, t.result.password, t.result.expiresAt, `Code also sent by ${esc(t.result.sentVia)} to ${esc(t.phone)}.`);
+    if (t.status === 'success') loginRouter(t.result.username, t.result.password, t.result.expiresAt, `<a class="wabtn" target="_blank" href="${esc(t.result.whatsappLink)}">&#128172; Save code to my WhatsApp</a><div class="muted small">Opens WhatsApp with your code ready - send it to yourself to keep it.</div>`);
     else if (t.status === 'pending') msg('Still waiting for M-Pesa. If you paid, use "Lost code" in a minute.', 'bad');
     else msg(esc(t.message || 'Payment failed'), 'bad');
   } catch (e) { msg(esc(e.message), 'bad'); }

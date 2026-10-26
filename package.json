@@ -7,6 +7,7 @@
     "start": "node start-all.js",
     "oneisp": "node oneisp/server.js",
     "smartolt": "node smartolt/server.js",
+    "setup": "node setup.js",
     "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true});console.log('data/ removed - demo data will be re-created on next start')\""
   },
   "engines": { "node": ">=22.13" }

@@ -166,7 +166,7 @@ if (localStorage.theme === 'light') document.documentElement.classList.add('ligh
 function setBanner(me) {
   const warn = [];
   if (me.mpesaMode === 'simulate') warn.push('M-Pesa is in <b>SIMULATE</b> mode - no real PIN prompts are sent');
-  if (me.whatsappProvider === 'simulate' && me.smsProvider === 'simulate') warn.push('SMS and WhatsApp providers are <b>simulate</b> - no codes or messages leave this PC');
+  if (me.whatsappProvider === 'link') warn.push('WhatsApp is click-to-send - open <a href="#/sms">SMS &amp; WhatsApp</a> and press "Send in WhatsApp" on new messages');
   $('#modeBanner').innerHTML = warn.length ? `<div class="banner">&#9888; ${warn.join(' &middot; ')}. <a href="#/settings">Open Settings</a> &middot; <a href="#/mpesa">M-Pesa &rarr; Diagnose</a></div>` : '';
 }
 async function boot() {
@@ -503,7 +503,7 @@ routes['customers/:id'] = async (page, id) => {
     },
     () => { tb.innerHTML = table([{ label: 'Date', render: a => dt(a.createdAt) }, { label: 'Action', render: a => pill(a.action === 'note' ? 'new' : 'unknown').replace(/>(new|unknown)</, `>${esc(a.action)}<`) }, { label: 'Details', key: 'detail' }, { label: 'By', key: 'by' }], d.activity, { empty: 'No activity yet' }); },
     () => { tb.innerHTML = table([{ label: 'No', key: 'number' }, { label: 'Subject', key: 'subject' }, { label: 'Priority', render: t => pill(t.priority) }, { label: 'Status', render: t => pill(t.status) }, { label: 'Opened', render: t => dt(t.createdAt) }], d.tickets, { onRow: t => (location.hash = `#/tickets/${t.id}`) }); },
-    () => { tb.innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'Type', key: 'kind' }, { label: 'To', key: 'to' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) }], d.sms); },
+    () => { tb.innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'Type', key: 'kind' }, { label: 'To', key: 'to' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) + waBtn(m) }], d.sms); },
     () => { tb.innerHTML = logsHtml(d.logs); bindLogs(); },
   ];
   $$('.subtab').forEach(t => (t.onclick = () => { $$('.subtab').forEach(x => x.classList.remove('active')); t.classList.add('active'); tabs[t.dataset.t](); }));
@@ -531,7 +531,8 @@ routes['customers/:id'] = async (page, id) => {
   };
   $('#more').onchange = e => { const a = e.target.value; e.target.value = ''; if (more[a]) more[a](); };
 };
-const msgStatus = s => { s = String(s || ''); if (s.startsWith('NOT SENT')) return `<span class="pill p-unmatched">not sent</span><div class="small" style="color:var(--warn)">${esc(s.slice(11))}</div>`; return s.startsWith('failed') ? `<span class="pill p-failed" title="${esc(s)}">failed</span><div class="small" style="color:var(--bad)">${esc(s.slice(8))}</div>` : s === 'sending' ? pill('pending') : `<span class="pill p-ok">${esc(s.split(' (')[0])}</span>`; };
+const waBtn = m => (m.link ? ` <a class="btn sm ok" target="_blank" href="${esc(m.link)}">Send in WhatsApp</a>` : '');
+const msgStatus = s => { s = String(s || ''); if (s.startsWith('READY')) return `<span class="pill p-whatsapp">ready</span>`; if (s.startsWith('NOT SENT')) return `<span class="pill p-unmatched">not sent</span><div class="small" style="color:var(--warn)">${esc(s.slice(11))}</div>`; return s.startsWith('failed') ? `<span class="pill p-failed" title="${esc(s)}">failed</span><div class="small" style="color:var(--bad)">${esc(s.slice(8))}</div>` : s === 'sending' ? pill('pending') : `<span class="pill p-ok">${esc(s.split(' (')[0])}</span>`; };
 function mpesaTable(list) {
   return table([{ label: 'Date', render: r => dt(r.createdAt) }, { label: 'Type', render: r => `${r.kind === 'c2b' ? 'Paybill (C2B)' : 'STK push'}<div class="small muted">${esc(r.purpose)} &middot; ${esc(r.mode)}</div>` },
     { label: 'Phone', render: r => `<span class="mono">${esc(r.phone)}</span>${r.payer ? `<div class="small muted">${esc(r.payer)}</div>` : ''}` }, { label: 'Amount', render: r => `<b>${money(r.amount)}</b>` }, { label: 'Account ref', render: r => esc(r.reference || '-') },
@@ -658,7 +659,7 @@ routes.sms = async page => {
   const provider = ch => s.messaging[ch].provider;
   page.innerHTML = `<div class="card"><h2>Send message</h2><div class="lesson small">SMS provider: <b>${esc(provider('sms'))}</b> &middot; WhatsApp provider: <b>${esc(provider('whatsapp'))}</b> &middot; change in <a href="#/settings">Settings</a>. "simulate" only writes to the outbox below.</div><form id="f">${fields([{ name: 'channel', label: 'Channel', type: 'select', options: ['sms', 'whatsapp', 'both'], value: s.messaging.defaultChannel }, { name: 'group', label: 'Recipients', type: 'select', options: [{ value: '', label: 'Single number' }, { value: 'all', label: 'All customers' }, { value: 'active', label: 'Active customers' }, { value: 'expired', label: 'Expired customers' }, { value: 'disabled', label: 'Disabled customers' }] }, { name: 'to', label: 'Phone (single number)' }, { name: 'message', label: 'Message - placeholders {name} {account} {package} {expiry} {price} {paybill}', type: 'textarea', full: true }])}<button class="btn primary">Send</button></form></div>
   <div class="card"><h2>Outbox</h2><div id="ob"></div></div>`;
-  const draw = l => { $('#ob').innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'To', key: 'to' }, { label: 'Type', key: 'kind' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) }], l); };
+  const draw = l => { $('#ob').innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'To', key: 'to' }, { label: 'Type', key: 'kind' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) + waBtn(m) }], l); };
   draw(list);
   $('#f').onsubmit = async e => { e.preventDefault(); try { const r = await POST('/api/sms/send', formData(e.target)); toast(`Queued ${r.sent}`, 'ok'); setTimeout(async () => draw(await GET('/api/sms')), 1500); } catch (err) { fail(err); } };
   timer = setInterval(async () => { if (!location.hash.startsWith('#/sms')) return clearInterval(timer); draw(await GET('/api/sms')); }, 5000);
@@ -701,12 +702,11 @@ routes.settings = async page => {
 
   <div class="card"><h2>Messaging (SMS & WhatsApp)</h2>
   <div class="lesson small"><b>SMS</b>: Africa's Talking - create a free account, use the <i>sandbox</i> app (username <span class="mono">sandbox</span>) and its API key; messages appear in the AT simulator.<br>
-  <b>WhatsApp</b>: either <b>Twilio</b> WhatsApp sandbox (easiest: send "join &lt;code&gt;" from your WhatsApp to +1 415 523 8886 first) or <b>Meta WhatsApp Cloud API</b> (free test number; add your phone as a recipient; free-text works only within 24h after the customer messaged you, otherwise set an approved template).</div>
+  <b>WhatsApp</b> (both free): <b>Click-to-send</b> needs no account - every WhatsApp message gets a "Send in WhatsApp" button that opens WhatsApp (app or web.whatsapp.com) with the text ready, and hotspot buyers get a "Save code to my WhatsApp" button. <b>Meta WhatsApp Cloud API</b> sends automatically from Meta's free test number (add your phone as a test recipient; free text only within 24h after the customer messaged you, otherwise use an approved template).</div>
   ${fields([{ name: 'ms_defaultChannel', label: 'Default channel for automatic messages', type: 'select', value: ms.defaultChannel, options: ['sms', 'whatsapp', 'both'] }, { name: 'ms_hotspotChannel', label: 'Send hotspot codes by', type: 'select', value: ms.hotspotChannel, options: ['whatsapp', 'sms', 'both'] },
     { name: 'sms_provider', label: 'SMS provider', type: 'select', value: ms.sms.provider, options: [{ value: 'simulate', label: 'Simulate (outbox only)' }, { value: 'africastalking', label: "Africa's Talking" }] }, { name: 'sms_sandbox', label: "Use Africa's Talking sandbox", type: 'checkbox', value: ms.sms.sandbox },
     { name: 'sms_username', label: 'AT username (live only)', value: ms.sms.username }, { name: 'sms_apiKey', label: 'AT API key', type: 'password', value: ms.sms.apiKey }, { name: 'sms_senderId', label: 'Sender ID (optional)', value: ms.sms.senderId },
-    { name: 'wa_provider', label: 'WhatsApp provider', type: 'select', value: ms.whatsapp.provider, options: [{ value: 'simulate', label: 'Simulate (outbox only)' }, { value: 'twilio', label: 'Twilio WhatsApp' }, { value: 'meta', label: 'Meta WhatsApp Cloud API' }] },
-    { name: 'wa_twilioSid', label: 'Twilio Account SID', value: ms.whatsapp.twilioSid }, { name: 'wa_twilioToken', label: 'Twilio Auth token', type: 'password', value: ms.whatsapp.twilioToken }, { name: 'wa_twilioFrom', label: 'Twilio WhatsApp number', value: ms.whatsapp.twilioFrom },
+    { name: 'wa_provider', label: 'WhatsApp method', type: 'select', value: ms.whatsapp.provider, options: [{ value: 'link', label: 'Click-to-send (free, wa.me link - you press Send in WhatsApp)' }, { value: 'meta', label: 'Meta WhatsApp Cloud API (free test number, fully automatic)' }] },
     { name: 'wa_phoneNumberId', label: 'Meta phone number ID', value: ms.whatsapp.phoneNumberId }, { name: 'wa_token', label: 'Meta access token', type: 'password', value: ms.whatsapp.token },
     { name: 'wa_template', label: 'Meta template name (blank = free text)', value: ms.whatsapp.template }, { name: 'wa_templateLang', label: 'Template language', value: ms.whatsapp.templateLang }, { name: 'wa_templateHasParam', label: 'Template has one {{1}} body parameter (we put the message there)', type: 'checkbox', value: ms.whatsapp.templateHasParam }])}
   <div class="row"><input id="testTo" placeholder="Test phone e.g. 0712345678" style="max-width:240px"><select id="testCh" style="max-width:160px"><option>whatsapp</option><option>sms</option></select><button type="button" class="btn" id="msgTest">Save & send test</button><span id="msgRes" class="small"></span></div></div>
@@ -730,7 +730,7 @@ routes.settings = async page => {
       await save();
       const r = await POST('/api/messaging/test', { to: $('#testTo').value, channel: $('#testCh').value });
       $('#msgRes').textContent = 'sending...';
-      setTimeout(async () => { const m = await GET(`/api/sms/${r.id}`); $('#msgRes').innerHTML = msgStatus(m.status); }, 4000);
+      setTimeout(async () => { const m = await GET(`/api/sms/${r.id}`); $('#msgRes').innerHTML = msgStatus(m.status) + waBtn(m); }, 1500);
     } catch (e) { fail(e); }
   };
   $('#testSo').onclick = async () => { try { const r = await POST('/api/settings/smartolt/test'); toast(`SmartOLT OK - ${r.olts} OLT(s)`, 'ok'); } catch (e) { fail(e); } };

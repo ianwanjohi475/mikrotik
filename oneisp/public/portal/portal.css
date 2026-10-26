@@ -4,3 +4,5 @@ body{margin:0;font-family:system-ui,"Segoe UI",sans-serif;background:linear-grad
 input{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;font-size:16px;box-sizing:border-box;margin:6px 0}button{width:100%;padding:13px;border:0;border-radius:8px;background:#7367f0;color:#fff;font-size:16px;cursor:pointer;margin-top:8px}button:disabled{opacity:.6}
 .msg{padding:12px;border-radius:8px;margin-top:12px;font-size:14px}.ok{background:#e6f9ef;color:#1c7c47}.bad{background:#fdecec;color:#b3261e}.info{background:#eef;color:#4338ca}.tabs{display:flex;gap:6px;margin-top:14px}.tabs div{flex:1;text-align:center;padding:9px;border-radius:8px;background:#f1f1f5;cursor:pointer}.tabs .on{background:#7367f0;color:#fff}
 .kv{display:grid;grid-template-columns:120px 1fr;gap:6px;font-size:14px}.kv div:nth-child(odd){color:#888}
+.code{font:700 32px Consolas,monospace;letter-spacing:4px;margin:10px 0;color:#1c7c47}.small{font-size:12px}
+.spin{width:26px;height:26px;border:3px solid #c7c2fb;border-top-color:#7367f0;border-radius:50%;animation:sp 1s linear infinite;margin:10px auto 0}@keyframes sp{to{transform:rotate(360deg)}}

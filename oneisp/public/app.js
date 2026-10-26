@@ -78,7 +78,7 @@ function modal(title, body, { wide = false, submit = 'Save', onSubmit, foot = tr
 }
 function formData(f) {
   const o = {};
-  $$('[name]', f).forEach(i => { o[i.name] = i.type === 'checkbox' ? i.checked : i.value; });
+  $$('[name]', f).forEach(i => { if (i.type === 'radio') { if (i.checked) o[i.name] = i.value; return; } o[i.name] = i.type === 'checkbox' ? i.checked : i.value; });
   return o;
 }
 function field(f, v = {}) {
@@ -126,8 +126,8 @@ const NAV = [
   ['', [['dashboard', '&#8962;', 'Dashboards']]],
   ['Management', [['sites', '&#127760;', 'Sites'], ['packages', '&#9707;', 'Packages'], ['policies', '&#8644;', 'Bandwidth Policy'], ['vouchers', '&#9636;', 'Vouchers']]],
   ['CRM', [['customers', '&#9786;', 'Customers'], ['leads', '&#9734;', 'Leads'], ['tickets', '&#9873;', 'Tickets']]],
-  ['Revenue', [['payments', '&#36;', 'Payments'], ['expenses', '&#8595;', 'Expenses']]],
-  ['Communication', [['sms', '&#9993;', 'SMS']]],
+  ['Revenue', [['payments', '&#36;', 'Payments'], ['mpesa', '&#9742;', 'M-Pesa'], ['expenses', '&#8595;', 'Expenses']]],
+  ['Communication', [['sms', '&#9993;', 'SMS & WhatsApp']]],
   ['System', [['logs', '&#9000;', 'Router Logs'], ['users', '&#9787;', 'Users'], ['settings', '&#9881;', 'Settings'], ['learn', '&#9733;', 'Learn / Lab guide']]],
   ['Portals', [['portal-hotspot', '&#8599;', 'Hotspot portal'], ['portal-account', '&#8599;', 'Customer portal']]],
 ];
@@ -140,6 +140,7 @@ function renderNav(active) {
 
 const routes = {};
 async function router() {
+  clearInterval(timer);
   const parts = (location.hash.slice(2).split('?')[0] || 'dashboard').split('/');
   const [name, id] = parts;
   renderNav(name);
@@ -362,8 +363,8 @@ async function customerForm(c, preset = {}) {
     const f = [
       { name: 'connectionType', label: 'Connection type', type: 'select', options: Object.entries(TYPES).map(([value, label]) => ({ value, label })) },
       { name: 'siteId', label: 'Site (router)', type: 'select', options: st.map(s => ({ value: s.id, label: s.name })) },
-      { name: 'name', label: 'Full name', required: true }, { name: 'phone', label: 'Phone', placeholder: '07XXXXXXXX' },
-      { name: 'email', label: 'Email' }, { name: 'idNumber', label: 'ID number' }, { name: 'address', label: 'Address / estate' }, { name: 'location', label: 'GPS / landmark' },
+      { name: 'name', label: 'Full name', required: true }, { name: 'phone', label: 'Phone (M-Pesa / SMS)', placeholder: '07XXXXXXXX' }, { name: 'whatsapp', label: 'WhatsApp number (blank = same as phone)' }, { name: 'altPhone', label: 'Alternative phone' },
+      { name: 'email', label: 'Email' }, { name: 'idNumber', label: 'ID number' }, { name: 'address', label: 'Address / estate' }, { name: 'location', label: 'Landmark / building' }, { name: 'gps', label: 'GPS (lat,long)', placeholder: '-1.1834,36.9301' }, { name: 'installedAt', label: 'Installation date', type: 'date' }, { name: 'routerModel', label: 'Customer router / CPE model' }, { name: 'routerSerial', label: 'CPE serial / MAC' },
       { name: 'packageId', label: 'Package', type: 'select', options: pk.filter(p => p.type === type).map(p => ({ value: p.id, label: `${p.name} - ${money(p.price)} / ${p.validityValue} ${p.validityUnit}` })) },
     ];
     if (type === 'pppoe' || type === 'hotspot') f.push({ name: 'username', label: 'Username', placeholder: 'auto = account number' }, { name: 'password', label: 'Password', placeholder: 'auto-generated' });
@@ -395,7 +396,7 @@ routes.customers = async page => {
   <div class="tabs">${Object.entries(TYPES).map(([k, l]) => `<div class="tab ${k === state.type ? 'active' : ''}" data-type="${k}">${l}</div>`).join('')}</div>
   <div class="card"><div class="toolbar"><div class="muted" id="count"></div><div class="actions">
     <select id="bulk" style="width:auto"><option value="">Actions</option><option value="sms">Send SMS</option><option value="resync">Re-sync to router</option><option value="disable">Disable</option><option value="enable">Enable</option><option value="kick">Disconnect session</option><option value="delete">Delete</option></select>
-    <button class="btn primary" id="new">New Customer</button></div></div><div id="list"></div></div>`;
+    <a class="btn" href="/api/customers.csv" download>Export CSV</a><button class="btn primary" id="new">New Customer</button></div></div><div id="list"></div></div>`;
   $('#fStatus').value = state.status;
   const draw = async () => {
     const q = new URLSearchParams({ type: $('#fConn').value || state.type, status: $('#fStatus').value, siteId: $('#fSite').value, packageId: $('#fPkg').value, search: $('#fSearch').value });
@@ -439,62 +440,120 @@ routes.customers = async page => {
   await draw();
 };
 
+// Polls an M-Pesa transaction until it finishes, updating a status element.
+async function watchTxn(t, el, done) {
+  const show = x => { el.innerHTML = `<div class="lesson">${pill(x.status)} ${esc(x.message || '')}</div>`; };
+  show(t);
+  for (let i = 0; i < 70 && t.status === 'pending'; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try { t = await GET(`/api/portal/txn/${t.id}`); } catch { break; }
+    show(t);
+  }
+  if (done) done(t);
+}
+const secret = v => `<span class="mono secret" data-v="${esc(v)}">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span> <a href="javascript:void(0)" class="reveal small">show</a>`;
+function bindSecrets(el = document) { $$('.reveal', el).forEach(a => (a.onclick = () => { const s = a.previousElementSibling; const shown = s.dataset.shown === '1'; s.textContent = shown ? '••••••••' : s.dataset.v; s.dataset.shown = shown ? '' : '1'; a.textContent = shown ? 'show' : 'hide'; })); }
+
 routes['customers/:id'] = async (page, id) => {
   const d = await GET(`/api/customers/${id}`);
   const c = d.customer;
-  const act = async (action, body, msg) => { const r = await POST(`/api/customers/${id}/action/${action}`, body); showRouter(r.router, `${action}: ${c.name}`); toast(msg || 'Done', 'ok'); router(); };
+  const act = async (action, body, msg) => { const r = await POST(`/api/customers/${id}/action/${action}`, body); if (r.router && r.router.ops) showRouter(r.router, `${action}: ${c.name}`); toast(msg || 'Done', 'ok'); router(); return r; };
+  const creds = c.connectionType === 'pppoe' || c.connectionType === 'hotspot';
   page.innerHTML = `<div class="card"><div class="toolbar"><div><h2><span class="dotc ${c.online ? 'on' : ''}"></span>${esc(c.name)} ${pill(c.status)} ${pill(TYPES[c.connectionType])}</h2>
     <div class="muted">Account <b>${esc(c.accountNo)}</b> &middot; ${esc(c.siteName)} &middot; ${esc(c.packageName)} (${money(c.price)}) &middot; expires ${dt(c.expiresAt)} (${timeLeft(c.expiresAt)}) &middot; balance ${money(c.balance)}</div></div>
-    <div class="actions"><button class="btn ok" id="pay">Record payment</button><button class="btn" id="extend">Extend / set expiry</button>
-    ${c.disabled ? '<button class="btn" id="enable">Enable</button>' : '<button class="btn warn" id="disable">Disable</button>'}<button class="btn" id="expire">Expire now</button>
-    <button class="btn" id="kick">Disconnect</button><button class="btn" id="resync">Re-sync</button><button class="btn" id="sms">SMS</button><button class="btn" id="ticket">Ticket</button><button class="btn primary" id="edit">Edit</button><button class="btn bad" id="del">Delete</button></div></div>
-    <div class="subtabs">${['Overview', 'Payments', 'Fiber / ONU', 'Tickets', 'SMS', 'Router log'].map((t, i) => `<div class="subtab ${i ? '' : 'active'}" data-t="${i}">${t}</div>`).join('')}</div><div id="tb"></div></div>`;
+    <div class="actions"><button class="btn ok" id="stk">Request M-Pesa</button><button class="btn ok" id="pay">Record payment</button><button class="btn primary" id="edit">Edit</button>
+    <select id="more" style="width:auto"><option value="">More actions...</option><option value="extend">Extend / set expiry</option><option value="package">Change package</option><option value="${c.disabled ? 'enable' : 'disable'}">${c.disabled ? 'Enable' : 'Disable'}</option><option value="expire">Expire now</option><option value="kick">Disconnect session</option><option value="resync">Re-sync to router</option>${creds ? '<option value="reset-password">Reset password</option><option value="send-credentials">Send login details</option>' : ''}<option value="adjust">Adjust balance / credit</option><option value="sms">Send message</option><option value="note">Add note</option><option value="ticket">Open ticket</option><option value="delete">Delete customer</option></select></div></div>
+    <div class="subtabs">${['Overview', 'Statement', 'M-Pesa', 'Fiber / ONU', 'Activity', 'Tickets', 'Messages', 'Router log'].map((t, i) => `<div class="subtab ${i ? '' : 'active'}" data-t="${i}">${t}</div>`).join('')}</div><div id="tb"></div></div>`;
   const tb = $('#tb');
-  const creds = c.connectionType === 'pppoe' || c.connectionType === 'hotspot';
+  const kv = pairs => `<div class="kv">${pairs.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join('')}</div>`;
   const tabs = [
     () => {
-      tb.innerHTML = `<div class="grid g2"><div><h3>Customer</h3><div class="kv"><div>Phone</div><div>${esc(c.phone || '-')}</div><div>Email</div><div>${esc(c.email || '-')}</div><div>ID number</div><div>${esc(c.idNumber || '-')}</div><div>Address</div><div>${esc(c.address || '-')}</div><div>Location</div><div>${esc(c.location || '-')}</div><div>Created</div><div>${dt(c.createdAt)}</div><div>Notes</div><div>${esc(c.notes || '-')}</div></div></div>
-      <div><h3>Service</h3><div class="kv"><div>Connection</div><div>${TYPES[c.connectionType]}</div>${creds ? `<div>Username</div><div class="mono">${esc(c.username)}</div><div>Password</div><div class="mono">${esc(c.password)}</div>` : ''}
-      <div>IP address</div><div class="mono">${esc(c.ipAddress || c.sessionIp || 'dynamic (from pool)')}</div><div>MAC</div><div class="mono">${esc(c.macAddress || c.sessionMac || '-')}</div>
-      <div>Session</div><div>${c.online ? `<span class="pill p-online">online</span> ${esc(c.sessionIp || '')} uptime ${esc(c.sessionUptime || '-')}` : `offline${c.lastSeen ? ' &middot; last seen ' + dt(c.lastSeen) : ''}`}</div>
-      <div>ONU</div><div class="mono">${esc(c.onuSn || '-')}</div></div></div></div>
+      tb.innerHTML = `<div class="grid g2"><div><h3>Customer</h3>${kv([['Phone', esc(c.phone || '-')], ['Alt. phone', esc(c.altPhone || '-')], ['WhatsApp', esc(c.whatsapp || c.phone || '-')], ['Email', esc(c.email || '-')], ['ID number', esc(c.idNumber || '-')], ['Address', esc(c.address || '-')], ['Location / GPS', `${esc(c.location || '-')} ${c.gps ? `<a target="_blank" href="https://maps.google.com/?q=${encodeURIComponent(c.gps)}">map</a>` : ''}`], ['Installed', c.installedAt ? dshort(c.installedAt) : '-'], ['CPE / router', `${esc(c.routerModel || '-')} ${esc(c.routerSerial || '')}`], ['Created', dt(c.createdAt)], ['Notes', esc(c.notes || '-')]])}</div>
+      <div><h3>Service</h3>${kv([['Connection', TYPES[c.connectionType]], ...(creds ? [['Username', `<span class="mono">${esc(c.username)}</span>`], ['Password', secret(c.password)]] : []), ['IP address', `<span class="mono">${esc(c.ipAddress || c.sessionIp || 'dynamic (from pool)')}</span>`], ['MAC', `<span class="mono">${esc(c.macAddress || c.sessionMac || '-')}</span>`],
+        ['Session', c.online ? `<span class="pill p-online">online</span> ${esc(c.sessionIp || '')} uptime ${esc(c.sessionUptime || '-')}` : `offline${c.lastSeen ? ' &middot; last seen ' + dt(c.lastSeen) : ''}`], ['ONU', `<span class="mono">${esc(c.onuSn || '-')}</span>`], ['Balance', money(c.balance)]])}</div></div>
       <div class="lesson" style="margin-top:18px"><b>On the MikroTik:</b> ${{ pppoe: `look in <span class="mono">PPP &rarr; Secrets</span> for <b>${esc(c.username)}</b> and <span class="mono">PPP &rarr; Active Connections</span> when online. Test it by dialing PPPoE from another VM with these credentials.`, hotspot: `look in <span class="mono">IP &rarr; Hotspot &rarr; Users</span> for <b>${esc(c.username)}</b>.`, static: `look in <span class="mono">Queues</span> for <b>OI-${esc(c.username)}</b> and <span class="mono">IP &rarr; Firewall &rarr; Address Lists</span> (OI-ACTIVE / OI-EXPIRED) for ${esc(c.ipAddress)}.`, dhcp: `look in <span class="mono">IP &rarr; DHCP Server &rarr; Leases</span> for MAC ${esc(c.macAddress)} (block-access toggles on expiry) and the queue <b>OI-${esc(c.username)}</b>.` }[c.connectionType]}</div>`;
+      bindSecrets(tb);
     },
-    () => { tb.innerHTML = table([{ label: 'Date', render: p => dt(p.createdAt) }, { label: 'Amount', render: p => money(p.amount) }, { label: 'Method', render: p => pill(p.method) }, { label: 'Reference', render: p => `<span class="mono">${esc(p.reference)}</span>` }, { label: 'Periods', key: 'periods' }, { label: 'New expiry', render: p => dt(p.expiryAfter) }, { label: 'By', key: 'by' }, { label: '', render: p => `<button class="btn sm" data-rcpt="${p.id}">Receipt</button>` }], d.payments, { empty: 'No payments yet' });
-      $$('[data-rcpt]').forEach(b => (b.onclick = () => receipt(d.payments.find(p => p.id === Number(b.dataset.rcpt)), c))); },
+    () => {
+      const rows = [...d.payments.map(p => ({ at: p.createdAt, type: 'Payment', ref: p.reference, method: p.method, amount: Number(p.amount), note: `${p.periods} period(s) -> ${dt(p.expiryAfter)}`, p })), ...d.adjustments.map(a => ({ at: a.createdAt, type: 'Adjustment', ref: '-', method: '-', amount: Number(a.amount), note: `${a.note} (by ${a.by})` }))].sort((a, b) => b.at.localeCompare(a.at));
+      const total = d.payments.reduce((a, p) => a + Number(p.amount), 0);
+      tb.innerHTML = `<div class="row" style="margin-bottom:12px"><span class="pill p-ok">Total paid ${money(total)}</span><span class="pill p-new">Balance ${money(c.balance)}</span><span class="pill p-pending">${d.payments.length} payments</span></div>` +
+        table([{ label: 'Date', render: r => dt(r.at) }, { label: 'Type', render: r => pill(r.type === 'Payment' ? 'ok' : 'pending').replace(/>(ok|pending)</, `>${r.type}<`) }, { label: 'Amount', render: r => `<b>${money(r.amount)}</b>` }, { label: 'Method', key: 'method' }, { label: 'Reference', render: r => `<span class="mono">${esc(r.ref)}</span>` }, { label: 'Details', key: 'note' }, { label: '', render: (r) => r.p ? `<button class="btn sm" data-rcpt="${r.p.id}">Receipt</button>` : '' }], rows, { empty: 'No payments yet' });
+      $$('[data-rcpt]').forEach(b => (b.onclick = () => receipt(d.payments.find(p => p.id === Number(b.dataset.rcpt)), c)));
+    },
+    () => { tb.innerHTML = mpesaTable(d.mpesa); },
     async () => {
       tb.innerHTML = '<div class="empty">Asking SmartOLT...</div>';
       try {
         const r = await GET(`/api/customers/${id}/onu`);
-        if (!r.linked) {
-          tb.innerHTML = `<div class="empty">No ONU linked. Authorize an ONU in SmartOLT and pick this customer (account ${esc(c.accountNo)}), or set "ONU serial" via Edit.</div>`;
-          return;
-        }
+        if (!r.linked) { tb.innerHTML = `<div class="empty">No ONU linked. Authorize an ONU in SmartOLT and pick this customer (account ${esc(c.accountNo)}), or set "ONU serial" via Edit.</div>`; return; }
         const o = r.onu;
         tb.innerHTML = `<div class="grid g2"><div class="kv"><div>Serial</div><div class="mono">${esc(o.sn)}</div><div>Status</div><div>${pill(String(o.status).toLowerCase().replace(' ', '_'))}</div><div>OLT / PON</div><div>${esc(o.olt_name)} &middot; ${esc(o.board)}/${esc(o.port)} ONU ${esc(o.onu)}</div><div>ONU type</div><div>${esc(o.onu_type)}</div><div>Mode</div><div>${esc(o.mode)} &middot; VLAN ${esc(o.vlan)}</div><div>Zone / ODB</div><div>${esc(o.zone)} / ${esc(o.odb)}</div></div>
           <div class="kv"><div>ONU Rx power</div><div><b style="color:${o.rx_power < -27 ? 'var(--bad)' : o.rx_power < -25 ? 'var(--warn)' : 'var(--ok)'}">${o.rx_power} dBm</b></div><div>OLT Rx power</div><div>${o.olt_rx_power} dBm</div><div>Distance</div><div>${o.distance} m</div><div>Uptime</div><div>${esc(o.uptime || '-')}</div><div>Last down cause</div><div>${esc(o.last_down_cause || '-')}</div></div></div>
           <div class="row" style="margin-top:16px"><button class="btn" data-onu="reboot">Reboot ONU</button><button class="btn" data-onu="resync">Resync config</button><button class="btn warn" data-onu="disable">Disable ONU</button><button class="btn" data-onu="enable">Enable ONU</button><a class="btn primary" target="_blank" href="${esc(o.url || '#')}">Open in SmartOLT</a></div>`;
-        $$('[data-onu]').forEach(b => (b.onclick = async () => { try { await POST(`/api/customers/${id}/onu/${b.dataset.onu}`); toast(`ONU ${b.dataset.onu} sent`, 'ok'); setTimeout(() => tabs[2](), 1500); } catch (e) { fail(e); } }));
-      } catch (e) { tb.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message)}<br><span class="muted">Is SmartOLT running? (node smartolt/server.js)</span></div>`; }
+        $$('[data-onu]').forEach(b => (b.onclick = async () => { try { await POST(`/api/customers/${id}/onu/${b.dataset.onu}`); toast(`ONU ${b.dataset.onu} sent`, 'ok'); setTimeout(() => tabs[3](), 1500); } catch (e) { fail(e); } }));
+      } catch (e) { tb.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message)}<br><span class="muted">Is SmartOLT running?</span></div>`; }
     },
+    () => { tb.innerHTML = table([{ label: 'Date', render: a => dt(a.createdAt) }, { label: 'Action', render: a => pill(a.action === 'note' ? 'new' : 'unknown').replace(/>(new|unknown)</, `>${esc(a.action)}<`) }, { label: 'Details', key: 'detail' }, { label: 'By', key: 'by' }], d.activity, { empty: 'No activity yet' }); },
     () => { tb.innerHTML = table([{ label: 'No', key: 'number' }, { label: 'Subject', key: 'subject' }, { label: 'Priority', render: t => pill(t.priority) }, { label: 'Status', render: t => pill(t.status) }, { label: 'Opened', render: t => dt(t.createdAt) }], d.tickets, { onRow: t => (location.hash = `#/tickets/${t.id}`) }); },
-    () => { tb.innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Type', key: 'kind' }, { label: 'Message', key: 'message' }], d.sms); },
+    () => { tb.innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'Type', key: 'kind' }, { label: 'To', key: 'to' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) }], d.sms); },
     () => { tb.innerHTML = logsHtml(d.logs); bindLogs(); },
   ];
   $$('.subtab').forEach(t => (t.onclick = () => { $$('.subtab').forEach(x => x.classList.remove('active')); t.classList.add('active'); tabs[t.dataset.t](); }));
   tabs[0]();
   $('#edit').onclick = () => customerForm(c);
   $('#pay').onclick = () => paymentForm(c);
-  $('#extend').onclick = () => modal('Extend / set expiry', fields([{ name: 'days', label: 'Add days (free extension / compensation)', type: 'number', value: 1 }, { name: 'expiresAt', label: 'OR set exact expiry', type: 'datetime-local' }]), { onSubmit: v => act('extend', v, 'Expiry updated') });
-  if ($('#disable')) $('#disable').onclick = () => act('disable', {}, 'Customer disabled');
-  if ($('#enable')) $('#enable').onclick = () => act('enable', {}, 'Customer enabled');
-  $('#expire').onclick = async () => { if (await confirmBox('Set expiry to now? The router entry will be suspended - watch it happen in WinBox.')) act('expire', {}, 'Expired'); };
-  $('#kick').onclick = () => act('kick', {}, 'Session removed');
-  $('#resync').onclick = () => act('resync', {}, 'Re-synced to router');
-  $('#sms').onclick = () => modal(`SMS ${c.name}`, fields([{ name: 'message', label: 'Message', type: 'textarea', full: true }]), { submit: 'Send', onSubmit: async v => { await POST(`/api/customers/${id}/action/sms`, v); toast('SMS sent (simulated)', 'ok'); } });
-  $('#ticket').onclick = () => ticketForm({ customerId: c.id });
-  $('#del').onclick = async () => { if (await confirmBox(`Delete ${esc(c.name)} and remove them from the router?`)) { const r = await DEL(`/api/customers/${id}`); showRouter(r.router, 'Customer removed'); location.hash = '#/customers'; } };
+  $('#stk').onclick = () => {
+    const m = modal(`Request M-Pesa payment from ${c.name}`, `<div class="lesson small">Sends an STK push (PIN prompt) to the customer's phone. When they pay, the account is renewed automatically and they get a confirmation message.</div>` + fields([{ name: 'phone', label: 'M-Pesa phone', value: c.phone }, { name: 'amount', label: `Amount (${CUR})`, type: 'number', value: c.price }]) + '<div id="stkst"></div>', {
+      submit: 'Send STK push', onSubmit: async v => { const t = await POST(`/api/customers/${id}/action/stk`, v); watchTxn(t.router, $('#stkst', m.el), x => { if (x.status === 'success') { toast('Payment received', 'ok'); setTimeout(() => { m.close(); router(); }, 1500); } }); return false; },
+    });
+  };
+  const more = {
+    extend: () => modal('Extend / set expiry', fields([{ name: 'days', label: 'Add days (free extension / compensation)', type: 'number', value: 1 }, { name: 'expiresAt', label: 'OR set exact expiry', type: 'datetime-local' }]), { onSubmit: v => act('extend', v, 'Expiry updated') }),
+    package: async () => { const pk = (await packages(true)).filter(p => p.type === c.connectionType); modal('Change package', `<div class="lesson small">The new speed applies immediately (the session is reconnected). Expiry stays the same.</div>` + fields([{ name: 'packageId', label: 'New package', type: 'select', options: pk.map(p => ({ value: p.id, label: `${p.name} - ${money(p.price)}` })), value: c.packageId }]), { onSubmit: async v => { const r = await PUT(`/api/customers/${id}`, v); showRouter(r.router, 'Package changed'); toast('Package changed', 'ok'); router(); } }); },
+    disable: () => act('disable', {}, 'Customer disabled'), enable: () => act('enable', {}, 'Customer enabled'),
+    expire: async () => { if (await confirmBox('Set expiry to now? The router entry will be suspended - watch it happen in WinBox.')) act('expire', {}, 'Expired'); },
+    kick: () => act('kick', {}, 'Session removed'), resync: () => act('resync', {}, 'Re-synced to router'),
+    'reset-password': () => modal('Reset password', fields([{ name: 'channel', label: 'Send the new login by', type: 'select', options: ['sms', 'whatsapp', 'both'] }]), { onSubmit: v => act('reset-password', v, 'New password set and sent') }),
+    'send-credentials': () => modal('Send login details', fields([{ name: 'channel', label: 'Send by', type: 'select', options: ['sms', 'whatsapp', 'both'] }]), { submit: 'Send', onSubmit: v => act('send-credentials', v, 'Login details sent') }),
+    adjust: () => modal('Adjust balance', `<div class="lesson small">Positive = credit (e.g. compensation, overpayment), negative = debit. When a payment arrives, the balance is used first.</div>` + fields([{ name: 'amount', label: `Amount (${CUR})`, type: 'number' }, { name: 'note', label: 'Reason' }]), { onSubmit: v => act('adjust-balance', v, 'Balance adjusted') }),
+    sms: () => modal(`Message ${c.name}`, fields([{ name: 'channel', label: 'Channel', type: 'select', options: ['sms', 'whatsapp', 'both'] }, { name: 'message', label: 'Message ({name} {account} {expiry} {package} {price} {paybill} {username} {password})', type: 'textarea', full: true }]), { submit: 'Send', onSubmit: async v => { await POST(`/api/customers/${id}/action/sms`, v); toast('Message queued', 'ok'); router(); } }),
+    note: () => modal('Add note', fields([{ name: 'text', label: 'Note (saved in the activity log)', type: 'textarea', full: true }]), { onSubmit: v => act('note', v, 'Note added') }),
+    ticket: () => ticketForm({ customerId: c.id }),
+    delete: async () => { if (await confirmBox(`Delete ${esc(c.name)} and remove them from the router?`)) { const r = await DEL(`/api/customers/${id}`); showRouter(r.router, 'Customer removed'); location.hash = '#/customers'; } },
+  };
+  $('#more').onchange = e => { const a = e.target.value; e.target.value = ''; if (more[a]) more[a](); };
 };
+const msgStatus = s => { s = String(s || ''); return s.startsWith('failed') ? `<span class="pill p-failed" title="${esc(s)}">failed</span><div class="small" style="color:var(--bad)">${esc(s.slice(8))}</div>` : s === 'sending' ? pill('pending') : `<span class="pill p-ok">${esc(s.split(' (')[0])}</span>`; };
+function mpesaTable(list) {
+  return table([{ label: 'Date', render: r => dt(r.createdAt) }, { label: 'Type', render: r => `${r.kind === 'c2b' ? 'Paybill (C2B)' : 'STK push'}<div class="small muted">${esc(r.purpose)} &middot; ${esc(r.mode)}</div>` },
+    { label: 'Phone', render: r => `<span class="mono">${esc(r.phone)}</span>${r.payer ? `<div class="small muted">${esc(r.payer)}</div>` : ''}` }, { label: 'Amount', render: r => `<b>${money(r.amount)}</b>` }, { label: 'Account ref', render: r => esc(r.reference || '-') },
+    { label: 'Receipt', render: r => `<span class="mono">${esc(r.receipt || '-')}</span>` }, { label: 'Status', render: r => pill(r.status) }, { label: 'Message', render: r => `<span class="small">${esc(r.message || '')}</span>${r.lastError ? `<div class="small" style="color:var(--bad)">${esc(r.lastError)}</div>` : ''}` },
+    { label: '', render: r => r.status === 'unmatched' ? `<button class="btn sm ok" data-alloc="${r.id}">Allocate</button>` : r.status === 'pending' && r.mode !== 'simulate' ? `<button class="btn sm" data-recheck="${r.id}">Check now</button>` : '' }], list, { empty: 'No M-Pesa transactions yet' });
+}
+
+// ============================================================ M-PESA
+routes.mpesa = async page => {
+  const [list, s] = await Promise.all([GET('/api/mpesa'), GET('/api/settings')]);
+  const mode = s.mpesa.mode;
+  page.innerHTML = `<div class="card"><div class="toolbar"><div><h2>M-Pesa transactions ${pill(mode === 'simulate' ? 'simulate' : 'live')} <span class="muted small">${esc(mode)}</span></h2></div>
+    <div class="actions"><button class="btn" id="test">Test connection</button><button class="btn ok" id="stk">Test STK push</button><button class="btn" id="c2b">Simulate paybill payment</button><button class="btn" id="reg">Register C2B URLs</button><button class="btn" id="cbs">Callback log</button><a class="btn" href="#/settings">Settings</a></div></div>
+  <div class="lesson small"><b>STK push</b>: we ask Safaricom to show a PIN prompt on the customer's phone; the result comes back by <b>callback</b> (needs a public https URL) or by <b>polling the query API</b> every few seconds (works on your PC with no public URL).
+  <b>C2B / Paybill</b>: customer pays from the M-Pesa menu with their account number; Safaricom POSTs a confirmation to us and we renew that account. Unknown account numbers land here as <i>unmatched</i> for you to allocate.</div>
+  <div id="ml">${mpesaTable(list)}</div></div>`;
+  const bindRows = () => {
+    $$('[data-alloc]').forEach(b => (b.onclick = async () => { const cs = (await GET('/api/customers')).rows; modal('Allocate payment to a customer', fields([{ name: 'customerId', label: 'Customer', type: 'select', options: cs.map(x => ({ value: x.id, label: `${x.accountNo} ${x.name}` })), full: true }]), { onSubmit: async v => { const r = await POST(`/api/mpesa/${b.dataset.alloc}/allocate`, v); showRouter(r.router, 'Payment allocated'); router(); } }); }));
+    $$('[data-recheck]').forEach(b => (b.onclick = async () => { await POST(`/api/mpesa/${b.dataset.recheck}/recheck`); router(); }));
+  };
+  bindRows();
+  $('#test').onclick = async () => { try { toast(esc((await POST('/api/mpesa/test')).message), 'ok'); } catch (e) { fail(e); } };
+  $('#stk').onclick = () => { const m = modal('Test STK push', `<div class="lesson small">Sandbox: use the test number <b>254708374149</b> or your own Safaricom number (sandbox pushes reach real phones but no money moves).</div>` + fields([{ name: 'phone', label: 'Phone', value: '254708374149' }, { name: 'amount', label: 'Amount', type: 'number', value: 1 }]) + '<div id="st"></div>', { submit: 'Send', onSubmit: async v => { const t = await POST('/api/mpesa/stk', v); watchTxn(t, $('#st', m.el)); return false; } }); };
+  $('#c2b').onclick = () => modal('Simulate paybill (C2B) payment', `<div class="lesson small">${mode === 'simulate' ? 'Simulate mode: we post a Safaricom-style confirmation to our own endpoint.' : 'Sandbox: Safaricom sends the confirmation to your registered public URL (register C2B URLs first).'} Use a customer account number as the bill reference.</div>` + fields([{ name: 'billRef', label: 'Account number (BillRefNumber)', value: 'LN1001' }, { name: 'amount', label: 'Amount', type: 'number', value: 1500 }, { name: 'phone', label: 'Payer phone', value: '254708374149' }]), { submit: 'Pay', onSubmit: async v => { await POST('/api/mpesa/c2b/simulate', v); toast('Paybill payment sent', 'ok'); setTimeout(router, 1500); } });
+  $('#reg').onclick = async () => { try { const r = await POST('/api/mpesa/c2b/register'); toast(esc(r.ResponseDescription || JSON.stringify(r)), 'ok'); } catch (e) { fail(e); } };
+  $('#cbs').onclick = async () => { const l = await GET('/api/mpesa/callbacks'); modal('Raw callbacks received from Safaricom', `<pre>${esc(JSON.stringify(l, null, 2))}</pre>`, { wide: true }); };
+  timer = setInterval(async () => { if (!location.hash.startsWith('#/mpesa')) return clearInterval(timer); $('#ml').innerHTML = mpesaTable(await GET('/api/mpesa')); bindRows(); }, 5000);
+};
+let timer = null;
 
 function receipt(p, c) {
   const w = window.open('', '_blank');
@@ -576,10 +635,14 @@ routes.expenses = async page => {
 
 // ============================================================ SMS / LOGS / USERS / SETTINGS
 routes.sms = async page => {
-  const list = await GET('/api/sms');
-  page.innerHTML = `<div class="card"><h2>Send SMS</h2><form id="f">${fields([{ name: 'group', label: 'Recipients', type: 'select', options: [{ value: '', label: 'Single number' }, { value: 'all', label: 'All customers' }, { value: 'active', label: 'Active customers' }, { value: 'expired', label: 'Expired customers' }, { value: 'disabled', label: 'Disabled customers' }] }, { name: 'to', label: 'Phone (single number)' }, { name: 'message', label: 'Message - placeholders {name} {account} {package} {expiry} {price} {paybill}', type: 'textarea', full: true }])}<button class="btn primary">Send</button></form></div>
-  <div class="card"><h2>Outbox <span class="muted small">(simulated gateway - nothing is really sent)</span></h2>${table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'To', key: 'to' }, { label: 'Type', key: 'kind' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => pill(m.status.split(' ')[0]) }], list)}</div>`;
-  $('#f').onsubmit = async e => { e.preventDefault(); try { const r = await POST('/api/sms/send', formData(e.target)); toast(`Sent ${r.sent}`, 'ok'); router(); } catch (err) { fail(err); } };
+  const [list, s] = await Promise.all([GET('/api/sms'), GET('/api/settings')]);
+  const provider = ch => s.messaging[ch].provider;
+  page.innerHTML = `<div class="card"><h2>Send message</h2><div class="lesson small">SMS provider: <b>${esc(provider('sms'))}</b> &middot; WhatsApp provider: <b>${esc(provider('whatsapp'))}</b> &middot; change in <a href="#/settings">Settings</a>. "simulate" only writes to the outbox below.</div><form id="f">${fields([{ name: 'channel', label: 'Channel', type: 'select', options: ['sms', 'whatsapp', 'both'], value: s.messaging.defaultChannel }, { name: 'group', label: 'Recipients', type: 'select', options: [{ value: '', label: 'Single number' }, { value: 'all', label: 'All customers' }, { value: 'active', label: 'Active customers' }, { value: 'expired', label: 'Expired customers' }, { value: 'disabled', label: 'Disabled customers' }] }, { name: 'to', label: 'Phone (single number)' }, { name: 'message', label: 'Message - placeholders {name} {account} {package} {expiry} {price} {paybill}', type: 'textarea', full: true }])}<button class="btn primary">Send</button></form></div>
+  <div class="card"><h2>Outbox</h2><div id="ob"></div></div>`;
+  const draw = l => { $('#ob').innerHTML = table([{ label: 'Date', render: m => dt(m.createdAt) }, { label: 'Channel', render: m => pill(m.channel || 'sms') }, { label: 'To', key: 'to' }, { label: 'Type', key: 'kind' }, { label: 'Message', key: 'message' }, { label: 'Status', render: m => msgStatus(m.status) }], l); };
+  draw(list);
+  $('#f').onsubmit = async e => { e.preventDefault(); try { const r = await POST('/api/sms/send', formData(e.target)); toast(`Queued ${r.sent}`, 'ok'); setTimeout(async () => draw(await GET('/api/sms')), 1500); } catch (err) { fail(err); } };
+  timer = setInterval(async () => { if (!location.hash.startsWith('#/sms')) return clearInterval(timer); draw(await GET('/api/sms')); }, 5000);
 };
 function logsHtml(list) {
   return list.map((l, i) => `<div class="comment"><div class="row"><b>${esc(l.context)}</b>${pill(l.ok ? 'ok' : 'error')}${pill(l.mode)}<span class="muted small">${esc(l.siteName)} &middot; ${dt(l.createdAt)}</span><span class="spacer"></span><button class="btn sm" data-log="${i}">Commands (${l.ops.length})</button></div>
@@ -601,20 +664,55 @@ routes.users = async page => {
 };
 routes.settings = async page => {
   const s = await GET('/api/settings');
-  page.innerHTML = `<form id="f"><div class="card"><h2>Company & billing</h2>${fields([{ name: 'companyName', label: 'Company name' }, { name: 'currency', label: 'Currency' }, { name: 'paybill', label: 'M-Pesa paybill (shown in SMS)' }, { name: 'accountPrefix', label: 'Account number prefix' },
+  const mp = s.mpesa, ms = s.messaging;
+  page.innerHTML = `<form id="f"><div class="card"><h2>Company & billing</h2>${fields([{ name: 'companyName', label: 'Company name' }, { name: 'currency', label: 'Currency' }, { name: 'paybill', label: 'M-Pesa paybill (shown in messages)' }, { name: 'accountPrefix', label: 'Account number prefix' },
     { name: 'expiredAction', label: 'When a PPPoE customer expires', type: 'select', options: [{ value: 'disable', label: 'Disable the PPP secret' }, { value: 'redirect', label: 'Move to OI-EXPIRED profile (redirect to pay page)' }] }, { name: 'reminderDays', label: 'Send expiry reminder N days before', type: 'number' },
-    { name: 'serverIp', label: 'Server IP (this PC as seen by MikroTik)', help: 'VirtualBox host-only adapter is usually 192.168.56.1' }, { name: 'smsEnabled', label: 'Automatic SMS enabled', type: 'checkbox' }], s)}</div>
-  <div class="card"><h2>SMS templates</h2>${fields(Object.keys(s.smsTemplates).map(k => ({ name: 'tpl_' + k, label: k, type: 'textarea', full: true, value: s.smsTemplates[k] })))}</div>
+    { name: 'serverIp', label: 'Server IP (this PC as seen by MikroTik)', help: 'VirtualBox host-only adapter is usually 192.168.56.1' }, { name: 'smsEnabled', label: 'Automatic messages enabled (welcome, payment, reminders...)', type: 'checkbox' }], s)}</div>
+
+  <div class="card"><h2>M-Pesa (Safaricom Daraja)</h2>
+  <div class="lesson small">Get keys at <a href="https://developer.safaricom.co.ke" target="_blank">developer.safaricom.co.ke</a> &rarr; My Apps. Sandbox test values: shortcode <b>174379</b> with the published passkey (pre-filled), test phone <b>254708374149</b>.
+  <b>Public base URL</b> is optional for STK (we poll the query API) but required for real callbacks and C2B - run <span class="mono">cloudflared tunnel --url http://localhost:${location.port || 80}</span> and paste the https URL it prints.</div>
+  ${fields([{ name: 'mp_mode', label: 'Mode', type: 'select', value: mp.mode, options: [{ value: 'simulate', label: 'Simulate (no internet needed, auto-approves)' }, { value: 'sandbox', label: 'Daraja sandbox (real API, test money)' }, { value: 'production', label: 'Production (real money!)' }] },
+    { name: 'mp_type', label: 'Shortcode type', type: 'select', value: mp.type, options: [{ value: 'paybill', label: 'Paybill (CustomerPayBillOnline)' }, { value: 'till', label: 'Till / Buy goods (CustomerBuyGoodsOnline)' }] },
+    { name: 'mp_consumerKey', label: 'Consumer key', value: mp.consumerKey }, { name: 'mp_consumerSecret', label: 'Consumer secret', type: 'password', value: mp.consumerSecret },
+    { name: 'mp_shortcode', label: 'Business shortcode (STK)', value: mp.shortcode }, { name: 'mp_passkey', label: 'Lipa na M-Pesa passkey', type: 'password', value: mp.passkey },
+    { name: 'mp_till', label: 'Till number (only for Buy goods)', value: mp.till }, { name: 'mp_c2bShortcode', label: 'C2B shortcode (sandbox: 600982)', value: mp.c2bShortcode },
+    { name: 'mp_callbackBase', label: 'Public base URL (https, optional)', value: mp.callbackBase, placeholder: 'https://xxxx.trycloudflare.com' }, { name: 'mp_c2bRejectUnknown', label: 'Reject paybill payments with unknown account numbers', type: 'checkbox', value: mp.c2bRejectUnknown }])}
+  <div class="row"><button type="button" class="btn" id="mpTest">Save & test keys</button><a class="btn" href="#/mpesa">M-Pesa transactions</a></div></div>
+
+  <div class="card"><h2>Messaging (SMS & WhatsApp)</h2>
+  <div class="lesson small"><b>SMS</b>: Africa's Talking - create a free account, use the <i>sandbox</i> app (username <span class="mono">sandbox</span>) and its API key; messages appear in the AT simulator.<br>
+  <b>WhatsApp</b>: either <b>Twilio</b> WhatsApp sandbox (easiest: send "join &lt;code&gt;" from your WhatsApp to +1 415 523 8886 first) or <b>Meta WhatsApp Cloud API</b> (free test number; add your phone as a recipient; free-text works only within 24h after the customer messaged you, otherwise set an approved template).</div>
+  ${fields([{ name: 'ms_defaultChannel', label: 'Default channel for automatic messages', type: 'select', value: ms.defaultChannel, options: ['sms', 'whatsapp', 'both'] }, { name: 'ms_hotspotChannel', label: 'Send hotspot codes by', type: 'select', value: ms.hotspotChannel, options: ['whatsapp', 'sms', 'both'] },
+    { name: 'sms_provider', label: 'SMS provider', type: 'select', value: ms.sms.provider, options: [{ value: 'simulate', label: 'Simulate (outbox only)' }, { value: 'africastalking', label: "Africa's Talking" }] }, { name: 'sms_sandbox', label: "Use Africa's Talking sandbox", type: 'checkbox', value: ms.sms.sandbox },
+    { name: 'sms_username', label: 'AT username (live only)', value: ms.sms.username }, { name: 'sms_apiKey', label: 'AT API key', type: 'password', value: ms.sms.apiKey }, { name: 'sms_senderId', label: 'Sender ID (optional)', value: ms.sms.senderId },
+    { name: 'wa_provider', label: 'WhatsApp provider', type: 'select', value: ms.whatsapp.provider, options: [{ value: 'simulate', label: 'Simulate (outbox only)' }, { value: 'twilio', label: 'Twilio WhatsApp' }, { value: 'meta', label: 'Meta WhatsApp Cloud API' }] },
+    { name: 'wa_twilioSid', label: 'Twilio Account SID', value: ms.whatsapp.twilioSid }, { name: 'wa_twilioToken', label: 'Twilio Auth token', type: 'password', value: ms.whatsapp.twilioToken }, { name: 'wa_twilioFrom', label: 'Twilio WhatsApp number', value: ms.whatsapp.twilioFrom },
+    { name: 'wa_phoneNumberId', label: 'Meta phone number ID', value: ms.whatsapp.phoneNumberId }, { name: 'wa_token', label: 'Meta access token', type: 'password', value: ms.whatsapp.token },
+    { name: 'wa_template', label: 'Meta template name (blank = free text)', value: ms.whatsapp.template }, { name: 'wa_templateLang', label: 'Template language', value: ms.whatsapp.templateLang }, { name: 'wa_templateHasParam', label: 'Template has one {{1}} body parameter (we put the message there)', type: 'checkbox', value: ms.whatsapp.templateHasParam }])}
+  <div class="row"><input id="testTo" placeholder="Test phone e.g. 0712345678" style="max-width:240px"><select id="testCh" style="max-width:160px"><option>whatsapp</option><option>sms</option></select><button type="button" class="btn" id="msgTest">Save & send test</button><span id="msgRes" class="small"></span></div></div>
+
+  <div class="card"><h2>Message templates</h2><div class="lesson small">Placeholders: {company} {name} {account} {username} {password} {package} {price} {expiry} {paybill} {currency} {amount} {code} {receipt} {ticket}</div>${fields(Object.keys(s.smsTemplates).map(k => ({ name: 'tpl_' + k, label: k, type: 'textarea', full: true, value: s.smsTemplates[k] })))}</div>
   <div class="card"><h2>Integrations</h2><div class="lesson small">OneISP and SmartOLT work together: SmartOLT pulls customers (PPPoE username/password) from OneISP when you authorize an ONU, and OneISP shows ONU signal on the customer page.</div>
   ${fields([{ name: 'so_url', label: 'SmartOLT URL', value: s.smartolt.url }, { name: 'so_token', label: 'SmartOLT API token (X-Token)', value: s.smartolt.token }, { name: 'apiToken', label: 'OneISP API token (give this to SmartOLT)' }], s)}
   <button type="button" class="btn" id="testSo">Test SmartOLT connection</button></div>
   <div class="row"><button class="btn primary">Save settings</button><span class="spacer"></span><button type="button" class="btn bad" id="reset">Reset all data to demo</button></div></form>`;
-  $('#f').onsubmit = async e => {
-    e.preventDefault();
-    const v = formData(e.target);
-    const body = { ...v, smsTemplates: {}, smartolt: { url: v.so_url, token: v.so_token } };
-    Object.keys(v).filter(k => k.startsWith('tpl_')).forEach(k => (body.smsTemplates[k.slice(4)] = v[k]));
-    await PUT('/api/settings', body); toast('Settings saved', 'ok');
+  const collect = () => {
+    const v = formData($('#f'));
+    const pref = p => Object.fromEntries(Object.entries(v).filter(([k]) => k.startsWith(p)).map(([k, x]) => [k.slice(p.length), x]));
+    const body = { ...v, smsTemplates: pref('tpl_'), smartolt: { url: v.so_url, token: v.so_token }, mpesa: pref('mp_'), messaging: { ...pref('ms_'), sms: pref('sms_'), whatsapp: pref('wa_') } };
+    return body;
+  };
+  const save = () => PUT('/api/settings', collect());
+  $('#f').onsubmit = async e => { e.preventDefault(); try { await save(); toast('Settings saved', 'ok'); } catch (err) { fail(err); } };
+  $('#mpTest').onclick = async () => { try { await save(); toast(esc((await POST('/api/mpesa/test')).message), 'ok'); } catch (e) { fail(e); } };
+  $('#msgTest').onclick = async () => {
+    try {
+      await save();
+      const r = await POST('/api/messaging/test', { to: $('#testTo').value, channel: $('#testCh').value });
+      $('#msgRes').textContent = 'sending...';
+      setTimeout(async () => { const m = await GET(`/api/sms/${r.id}`); $('#msgRes').innerHTML = msgStatus(m.status); }, 4000);
+    } catch (e) { fail(e); }
   };
   $('#testSo').onclick = async () => { try { const r = await POST('/api/settings/smartolt/test'); toast(`SmartOLT OK - ${r.olts} OLT(s)`, 'ok'); } catch (e) { fail(e); } };
   $('#reset').onclick = async () => { if (await confirmBox('Wipe everything and restore demo data?')) { await POST('/api/settings/reset'); location.reload(); } };

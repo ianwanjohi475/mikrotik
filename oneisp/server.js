@@ -6,6 +6,8 @@ const { createApp, HttpError } = require('../lib/http');
 const { Store } = require('../lib/db');
 const { toCli, RestClient, SimRouter } = require('../lib/routeros');
 const P = require('./provision');
+const { Mpesa, normalizePhone, RESULT_CODES } = require('./mpesa');
+const { deliver } = require('./notify');
 const seed = require('./seed');
 
 const PORT = Number(process.env.ONEISP_PORT || 8080);
@@ -13,7 +15,13 @@ const HOST = process.env.HOST || '0.0.0.0';
 const db = new Store(path.join(__dirname, '..', 'data', 'oneisp.json'), seed.seed);
 const app = createApp({ publicDir: path.join(__dirname, 'public') });
 
-const settings = () => db.obj('settings', seed.DEFAULT_SETTINGS);
+// settings with nested defaults (new keys appear automatically in older data files)
+function settings() {
+  const s = db.obj('settings', seed.DEFAULT_SETTINGS);
+  for (const k of ['smsTemplates', 'mpesa', 'messaging', 'smartolt']) s[k] = { ...seed.DEFAULT_SETTINGS[k], ...(s[k] || {}) };
+  for (const k of ['sms', 'whatsapp']) s.messaging[k] = { ...seed.DEFAULT_SETTINGS.messaging[k], ...(s.messaging[k] || {}) };
+  return s;
+}
 const now = () => new Date();
 const iso = d => new Date(d).toISOString();
 const rand = (n, chars = 'abcdefghjkmnpqrstuvwxyz23456789') => Array.from(crypto.randomBytes(n), b => chars[b % chars.length]).join('');
@@ -127,13 +135,32 @@ function render(tpl, c, extra = {}) {
   };
   return String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined ? vars[k] : m));
 }
-function sendSms(phone, message, customerId, kind = 'manual') {
-  if (!phone) return null;
-  return db.insert('sms', { to: phone, message, customerId: customerId || null, kind, status: 'delivered (simulated)' });
+// Queue a message and deliver it in the background (SMS via Africa's Talking, WhatsApp via Meta/Twilio, or simulated).
+// `to` is a phone number or { sms, whatsapp } numbers; channel 'sms' | 'whatsapp' | 'both' (default from settings).
+function sendSms(to, message, customerId, kind = 'manual', channel) {
+  const m = settings().messaging;
+  const ch = channel || m.defaultChannel || 'sms';
+  const recs = (ch === 'both' ? ['sms', 'whatsapp'] : [ch]).map(c => {
+    const phone = typeof to === 'object' && to ? to[c] || to.sms : to;
+    if (!phone) return null;
+    const rec = db.insert('sms', { to: phone, message, customerId: customerId || null, kind, channel: c, status: 'sending' });
+    deliver(m, c, phone, message)
+      .then(r => Object.assign(rec, r, { sentAt: iso(now()) }))
+      .catch(e => Object.assign(rec, { status: 'failed: ' + e.message }))
+      .finally(() => { db.trim('sms', 3000); db.save(); });
+    return rec;
+  }).filter(Boolean);
+  return recs[0] || null;
 }
-function smsTemplate(c, key, extra) {
+const numbersOf = c => ({ sms: c.phone, whatsapp: c.whatsapp || c.phone });
+function smsTemplate(c, key, extra, channel) {
   const tpl = settings().smsTemplates[key];
-  if (tpl && settings().smsEnabled) sendSms(c.phone, render(tpl, c, extra), c.id, key);
+  if (tpl && settings().smsEnabled) sendSms(numbersOf(c), render(tpl, c, extra), c.id, key, channel);
+}
+function logActivity(c, action, detail = '', by = 'system') {
+  if (!c) return;
+  db.insert('activity', { customerId: c.id, action, detail, by });
+  db.trim('activity', 5000);
 }
 
 function decorate(c) {
@@ -149,7 +176,7 @@ function extendCustomer(c, periods = 1) {
   c.reminderSentFor = null;
 }
 
-async function applyPayment({ customerId, amount, method = 'cash', reference, note, by }) {
+async function applyPayment({ customerId, amount, method = 'cash', reference, note, by, silent }) {
   const c = db.get('customers', customerId);
   if (!c) throw new HttpError(404, 'Customer not found');
   amount = Number(need(amount, 'Amount is required'));
@@ -167,7 +194,8 @@ async function applyPayment({ customerId, amount, method = 'cash', reference, no
     reference: reference || (method === 'mpesa' ? 'S' + rand(9, 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789') : rand(8).toUpperCase()),
     note, periods, packageName: pkg?.name, expiryBefore: before, expiryAfter: c.expiresAt, by: by || 'system',
   });
-  smsTemplate(c, 'payment', { amount });
+  if (!silent) smsTemplate(c, 'payment', { amount });
+  logActivity(c, 'payment', `${settings().currency} ${amount} via ${method} (${pay.reference}) - ${periods} period(s)`, by);
   const router = await provision(c, `Payment ${pay.reference}: ${periods} period(s) added`);
   return { payment: pay, customer: decorate(c), router };
 }
@@ -377,7 +405,7 @@ app.delete('/api/policies/:id', req => {
 });
 
 // ---------------------------------------------------------------- customers
-const CUSTOMER_FIELDS = ['name', 'phone', 'email', 'idNumber', 'address', 'location', 'gps', 'siteId', 'packageId', 'connectionType', 'username', 'password', 'ipAddress', 'macAddress', 'expiresAt', 'notes', 'onuSn', 'installationFee'];
+const CUSTOMER_FIELDS = ['name', 'phone', 'altPhone', 'whatsapp', 'installedAt', 'routerModel', 'routerSerial', 'email', 'idNumber', 'address', 'location', 'gps', 'siteId', 'packageId', 'connectionType', 'username', 'password', 'ipAddress', 'macAddress', 'expiresAt', 'notes', 'onuSn', 'installationFee'];
 function cleanCustomer(b) {
   const c = pick(b, CUSTOMER_FIELDS);
   if (c.siteId !== undefined) c.siteId = Number(c.siteId);
@@ -416,6 +444,11 @@ app.get('/api/customers', req => {
     (!s || [c.name, c.accountNo, c.username, c.phone, c.ipAddress, c.macAddress, c.address, c.onuSn].some(v => String(v || '').toLowerCase().includes(s))));
   return { stats, rows: rows.reverse() };
 });
+app.get('/api/customers.csv', (req, res) => {
+  const cols = ['accountNo', 'name', 'phone', 'altPhone', 'whatsapp', 'email', 'idNumber', 'address', 'location', 'gps', 'connectionType', 'username', 'password', 'ipAddress', 'macAddress', 'packageName', 'price', 'siteName', 'status', 'expiresAt', 'balance', 'onuSn', 'routerModel', 'installedAt', 'createdAt'];
+  const rows = db.col('customers').map(decorate).filter(c => !req.query.type || c.connectionType === req.query.type);
+  res.send([cols.join(','), ...rows.map(c => cols.map(k => `"${String(c[k] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'), 'text/csv', 200, { 'Content-Disposition': 'attachment; filename="customers.csv"' });
+});
 app.get('/api/customers/:id', req => {
   const c = db.get('customers', req.params.id);
   if (!c) throw new HttpError(404, 'Customer not found');
@@ -425,6 +458,9 @@ app.get('/api/customers/:id', req => {
     tickets: db.find('tickets', t => t.customerId === c.id).reverse(),
     sms: db.find('sms', m => m.customerId === c.id).reverse().slice(0, 30),
     logs: db.find('routerLogs', l => l.customerId === c.id).reverse().slice(0, 20),
+    activity: db.find('activity', a => a.customerId === c.id).reverse().slice(0, 100),
+    mpesa: db.find('mpesa', m => m.customerId === c.id).reverse().slice(0, 30),
+    adjustments: db.find('adjustments', a => a.customerId === c.id).reverse(),
   };
 });
 app.post('/api/customers', async req => {
@@ -439,6 +475,7 @@ app.post('/api/customers', async req => {
   }
   db.save();
   smsTemplate(c, 'welcome');
+  logActivity(c, 'created', `${c.connectionType} on ${siteOf(c)?.name}, package ${pkg?.name}`, req.user.username);
   return { customer: decorate(c), router: await provision(c, `New customer ${c.accountNo}`) };
 });
 app.put('/api/customers/:id', async req => {
@@ -459,6 +496,8 @@ app.put('/api/customers/:id', async req => {
   router.push(await provision(c, `Update customer ${c.accountNo}`));
   delete c._profileChanged;
   db.update('customers', c.id, {});
+  const changes = Object.keys(patch).filter(k => String(patch[k] ?? '') !== String(before[k] ?? '')).map(k => k === 'password' ? 'password' : `${k}: ${before[k] ?? '-'} -> ${patch[k]}`);
+  if (changes.length) logActivity(c, 'updated', changes.join(', '), req.user.username);
   return { customer: decorate(c), router };
 });
 app.delete('/api/customers/:id', async req => {
@@ -488,6 +527,31 @@ async function customerAction(c, action, body = {}, user = 'system') {
     }
     case 'sms': return sendSms(c.phone, render(need(body.message, 'Message required'), c), c.id, 'manual');
     case 'resync': break;
+    case 'reset-password': {
+      c.password = rand(8);
+      db.save();
+      logActivity(c, 'reset-password', 'New password generated', user);
+      const r = await provision(c, `New password for ${c.accountNo}`);
+      if (body.notify !== false) smsTemplate(c, 'credentials', {}, body.channel);
+      return r;
+    }
+    case 'send-credentials':
+      logActivity(c, 'send-credentials', `via ${body.channel || settings().messaging.defaultChannel}`, user);
+      return sendSms(numbersOf(c), render(settings().smsTemplates.credentials, c), c.id, 'credentials', body.channel);
+    case 'adjust-balance': {
+      const amount = Number(need(body.amount, 'Amount required'));
+      c.balance = Number(c.balance || 0) + amount;
+      db.insert('adjustments', { customerId: c.id, amount, note: body.note || '', by: user, balanceAfter: c.balance });
+      logActivity(c, 'adjust-balance', `${amount > 0 ? '+' : ''}${amount} (${body.note || 'no note'}) -> balance ${c.balance}`, user);
+      db.save();
+      return null;
+    }
+    case 'stk': {
+      const pkg = pkgOf(c);
+      logActivity(c, 'stk-request', `M-Pesa request ${body.amount || pkg?.price} to ${body.phone || c.phone}`, user);
+      return startPayment({ phone: body.phone || c.phone, amount: Number(body.amount || pkg?.price), purpose: 'account', payload: { customerId: c.id, by: user }, reference: c.accountNo, description: 'Internet' });
+    }
+    case 'note': logActivity(c, 'note', need(body.text, 'Note text required'), user); return null;
     case 'delete': { const r = await deprovision(c, `Delete customer ${c.accountNo}`); db.remove('customers', c.id); return r; }
     default: throw new HttpError(400, 'Unknown action ' + action);
   }
@@ -495,7 +559,7 @@ async function customerAction(c, action, body = {}, user = 'system') {
   c.status = computeStatus(c);
   db.save();
   if (prev !== c.status && c.status === 'expired') smsTemplate(c, 'expired');
-  db.insert('activity', { customerId: c.id, action, by: user });
+  logActivity(c, action, action === 'extend' ? `expiry -> ${c.expiresAt}` : '', user);
   return provision(c, `${action} ${c.accountNo}`);
 }
 app.post('/api/customers/:id/action/:action', async req => {
@@ -667,6 +731,13 @@ app.put('/api/settings', req => {
   s.reminderDays = Number(s.reminderDays);
   if (b.smsTemplates) s.smsTemplates = { ...s.smsTemplates, ...b.smsTemplates };
   if (b.smartolt) s.smartolt = { ...s.smartolt, ...b.smartolt };
+  if (b.mpesa) { s.mpesa = { ...s.mpesa, ...b.mpesa }; s.mpesa.c2bRejectUnknown = s.mpesa.c2bRejectUnknown === true || s.mpesa.c2bRejectUnknown === 'true'; }
+  if (b.messaging) {
+    const m = b.messaging;
+    s.messaging = { ...s.messaging, ...m, sms: { ...s.messaging.sms, ...(m.sms || {}) }, whatsapp: { ...s.messaging.whatsapp, ...(m.whatsapp || {}) } };
+    s.messaging.sms.sandbox = s.messaging.sms.sandbox === true || s.messaging.sms.sandbox === 'true';
+    s.messaging.whatsapp.templateHasParam = s.messaging.whatsapp.templateHasParam === true || s.messaging.whatsapp.templateHasParam === 'true';
+  }
   db.save();
   return s;
 });
@@ -679,60 +750,260 @@ app.post('/api/settings/reset', req => {
   return { ok: true };
 });
 
-// ---------------------------------------------------------------- customer portals (public)
-const txns = new Map();
-function startStk({ phone, amount, onSuccess }) {
-  need(phone, 'Phone number required');
-  const id = rand(12);
-  const t = { id, phone, amount, status: 'pending', message: `STK push sent to ${phone}. (Simulated: auto-approves in 4s)` };
-  txns.set(id, t);
-  setTimeout(async () => {
-    try { Object.assign(t, await onSuccess(), { status: 'success' }); }
-    catch (e) { t.status = 'failed'; t.message = e.message; }
-  }, 4000);
-  return t;
+// ---------------------------------------------------------------- M-Pesa payment engine
+// Every STK push is stored in the "mpesa" collection. Its result arrives either through the Daraja callback
+// (needs a public https URL, e.g. a cloudflared/ngrok tunnel) or through polling the STK query API
+// (works on a home PC with no public URL). Whichever comes first completes the payment exactly once.
+let _mp = null, _mpKey = '';
+function mp() {
+  const cfg = settings().mpesa;
+  const key = JSON.stringify(cfg);
+  if (key !== _mpKey) { _mp = new Mpesa(cfg); _mpKey = key; }
+  return _mp;
 }
+const publicTxn = r => ({ id: r.token, status: r.status, message: r.message, amount: r.amount, phone: r.phone, mode: r.mode, result: r.status === 'success' ? r.result : undefined });
+const RECEIPT_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+
+async function startPayment({ phone, amount, purpose, payload = {}, reference, description }) {
+  let msisdn;
+  try { msisdn = normalizePhone(need(phone, 'Enter your M-Pesa phone number')); } catch (e) { throw new HttpError(400, e.message); }
+  amount = Math.ceil(Number(amount));
+  if (!(amount >= 1)) throw new HttpError(400, 'Amount must be at least 1');
+  const cfg = settings().mpesa;
+  const rec = db.insert('mpesa', { kind: 'stk', token: rand(20), mode: cfg.mode, purpose, phone: msisdn, amount, reference, payload, customerId: payload.customerId || null, status: 'pending', message: '' });
+  if (cfg.mode === 'simulate') {
+    rec.message = `Simulated STK push to ${msisdn}: it auto-approves in 4 seconds. (Settings > M-Pesa to use the real Daraja sandbox)`;
+    setTimeout(() => completePayment(rec, { receipt: 'SIM' + rand(7, RECEIPT_CHARS) }), 4000);
+    db.save();
+    return publicTxn(rec);
+  }
+  const callbackUrl = cfg.callbackBase ? cfg.callbackBase.replace(/\/$/, '') + '/api/portal/mpesa/callback' : 'https://example.com/oneisp-no-callback';
+  try {
+    const r = await mp().stkPush({ phone: msisdn, amount, reference, description, callbackUrl });
+    Object.assign(rec, { checkoutRequestId: r.CheckoutRequestID, merchantRequestId: r.MerchantRequestID, message: `${r.CustomerMessage || 'Request sent'} - check your phone and enter your M-Pesa PIN.`, request: { callbackUrl, reference, at: iso(now()) } });
+  } catch (e) {
+    Object.assign(rec, { status: 'failed', message: 'M-Pesa: ' + e.message, error: e.body || e.message });
+    db.save();
+    throw new HttpError(502, rec.message);
+  }
+  db.save();
+  return publicTxn(rec);
+}
+
+async function completePayment(rec, { receipt, callback } = {}) {
+  if (rec.status !== 'pending') return;
+  rec.status = 'processing';
+  rec.receipt = receipt;
+  if (callback) rec.callback = callback;
+  try {
+    rec.result = await FULFIL[rec.purpose](rec, receipt);
+    rec.status = 'success';
+    rec.message = rec.result.message;
+  } catch (e) {
+    rec.status = 'error';
+    rec.message = 'Payment received but could not be applied: ' + e.message;
+    console.error('fulfilment failed', e);
+  }
+  rec.completedAt = iso(now());
+  db.save();
+}
+function failPayment(rec, code, desc) {
+  if (rec.status !== 'pending') return;
+  Object.assign(rec, { status: Number(code) === 1032 ? 'cancelled' : 'failed', resultCode: Number(code), message: RESULT_CODES[code] || desc || 'Payment failed', completedAt: iso(now()) });
+  db.save();
+}
+
+const FULFIL = {
+  // Customer account renewal (portal, admin "request payment", reminders)
+  account: async (rec, receipt) => {
+    const r = await applyPayment({ customerId: rec.customerId, amount: rec.amount, method: 'mpesa', reference: receipt, by: rec.payload.by || 'mpesa', note: `STK ${rec.phone}` });
+    return { expiresAt: r.customer.expiresAt, message: `Payment of ${settings().currency} ${rec.amount} received (${receipt}). Active until ${new Date(r.customer.expiresAt).toLocaleString()}.` };
+  },
+  // Hotspot purchase: create/renew a hotspot account whose username and password are one short code
+  hotspot: async (rec, receipt) => {
+    const site = db.get('sites', rec.payload.siteId), pkg = db.get('packages', rec.payload.packageId);
+    if (!site || !pkg) throw new Error('Site or package no longer exists');
+    const mac = fmtMac(rec.payload.mac);
+    let c = db.findOne('customers', x => x.connectionType === 'hotspot' && x.siteId === site.id && x.phone === rec.phone);
+    if (!c) {
+      let code;
+      do { code = rand(6, 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'); } while (db.findOne('customers', x => x.username === code) || db.findOne('vouchers', v => v.code === code));
+      c = createCustomerRecord({ name: `Hotspot ${rec.phone}`, phone: rec.phone, whatsapp: rec.phone, connectionType: 'hotspot', siteId: site.id, packageId: pkg.id, username: code, password: code, lastMac: mac });
+      logActivity(c, 'created', 'Self sign-up on hotspot portal', 'hotspot-portal');
+    } else {
+      if (c.packageId !== pkg.id) { c.packageId = pkg.id; c._profileChanged = true; }
+      if (computeStatus(c) !== 'active') c.expiresAt = null; // a new purchase starts now, not from an old expiry
+      c.lastMac = mac;
+    }
+    await applyPayment({ customerId: c.id, amount: rec.amount, method: 'mpesa', reference: receipt, by: 'hotspot-portal', silent: true });
+    delete c._profileChanged;
+    const m = settings().messaging;
+    sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site.name, receipt }), c.id, 'hotspot-code', m.hotspotChannel);
+    return { username: c.username, password: c.password, code: c.username, expiresAt: c.expiresAt, sentVia: m.hotspotChannel, message: `Paid (${receipt}). Your WiFi code is ${c.username} - also sent to ${rec.phone} by ${m.hotspotChannel}.` };
+  },
+};
+
+// Poll Daraja for pending STK pushes (no public URL needed).
+let polling = false;
+async function pollMpesa() {
+  if (polling) return;
+  polling = true;
+  try {
+    for (const rec of db.find('mpesa', r => r.kind === 'stk' && r.status === 'pending' && r.mode !== 'simulate' && r.checkoutRequestId)) {
+      const age = Date.now() - new Date(rec.createdAt);
+      if (age > 180000) { failPayment(rec, 1037, 'Timed out waiting for the customer'); continue; }
+      if (age < 8000 || (rec.lastQueryAt && Date.now() - new Date(rec.lastQueryAt) < 6000)) continue;
+      rec.lastQueryAt = iso(now());
+      try {
+        const q = await mp().stkQuery(rec.checkoutRequestId);
+        rec.query = q;
+        const code = q.ResultCode !== undefined ? Number(q.ResultCode) : NaN;
+        if (code === 0) await completePayment(rec, { receipt: 'STK' + rec.checkoutRequestId.slice(-8).toUpperCase() });
+        else if (!Number.isNaN(code)) failPayment(rec, code, q.ResultDesc);
+      } catch (e) {
+        // 500.001.1001 = "The transaction is being processed" -> still waiting for the PIN
+        if (e.code !== '500.001.1001' && !/being processed/i.test(e.message)) rec.lastError = e.message;
+      }
+    }
+  } finally { polling = false; }
+}
+
+// --- Daraja callbacks (public). Point Settings > M-Pesa > Public base URL at a tunnel to this server.
+app.post('/api/portal/mpesa/callback', async req => {
+  const cb = req.body?.Body?.stkCallback;
+  db.insert('mpesaCallbacks', { kind: 'stk', body: req.body });
+  db.trim('mpesaCallbacks', 500);
+  if (!cb) return { ResultCode: 0, ResultDesc: 'Accepted' };
+  const rec = db.findOne('mpesa', r => r.checkoutRequestId === cb.CheckoutRequestID);
+  if (!rec) return { ResultCode: 0, ResultDesc: 'Accepted' };
+  const meta = Object.fromEntries((cb.CallbackMetadata?.Item || []).map(i => [i.Name, i.Value]));
+  if (Number(cb.ResultCode) === 0) {
+    const receipt = meta.MpesaReceiptNumber || 'STK' + rec.checkoutRequestId.slice(-8).toUpperCase();
+    if (rec.status === 'pending') await completePayment(rec, { receipt, callback: cb });
+    else if (rec.status === 'success' && rec.receipt !== receipt) {
+      // polling completed it first with a placeholder - swap in the real M-Pesa receipt number
+      const pay = db.findOne('payments', p => p.reference === rec.receipt);
+      if (pay) pay.reference = receipt;
+      rec.receipt = receipt; rec.callback = cb;
+      db.save();
+    }
+  } else failPayment(rec, cb.ResultCode, cb.ResultDesc);
+  return { ResultCode: 0, ResultDesc: 'Accepted' };
+});
+// C2B: customer pays to the paybill from the M-Pesa menu using their account number.
+app.post('/api/portal/mpesa/c2b/validation', req => {
+  const ref = String(req.body.BillRefNumber || '').trim().toLowerCase();
+  const ok = !settings().mpesa.c2bRejectUnknown || db.findOne('customers', c => c.accountNo.toLowerCase() === ref || c.username.toLowerCase() === ref);
+  return ok ? { ResultCode: 0, ResultDesc: 'Accepted' } : { ResultCode: 'C2B00012', ResultDesc: 'Invalid Account Number' };
+});
+app.post('/api/portal/mpesa/c2b/confirmation', async req => {
+  const b = req.body || {};
+  if (db.findOne('mpesa', r => r.kind === 'c2b' && r.receipt === b.TransID)) return { ResultCode: 0, ResultDesc: 'Accepted' };
+  const ref = String(b.BillRefNumber || '').trim().toLowerCase();
+  const phone = String(b.MSISDN || '');
+  // match the account number first; fall back to the phone only when exactly one (non-hotspot) customer has it
+  const byPhone = phone.length > 9 ? db.find('customers', x => x.connectionType !== 'hotspot' && (() => { try { return normalizePhone(x.phone) === phone; } catch { return false; } })()) : [];
+  const c = db.findOne('customers', x => x.accountNo.toLowerCase() === ref || x.username.toLowerCase() === ref) || (byPhone.length === 1 ? byPhone[0] : null);
+  const rec = db.insert('mpesa', { kind: 'c2b', mode: settings().mpesa.mode, purpose: 'account', phone, amount: Number(b.TransAmount), reference: b.BillRefNumber, receipt: b.TransID, payer: [b.FirstName, b.MiddleName, b.LastName].filter(Boolean).join(' '), customerId: c?.id || null, status: c ? 'success' : 'unmatched', callback: b, message: c ? '' : `No customer with account "${b.BillRefNumber}" - allocate it manually` });
+  if (c) { const r = await applyPayment({ customerId: c.id, amount: rec.amount, method: 'mpesa', reference: b.TransID, by: 'mpesa-c2b', note: `Paybill from ${rec.payer || phone}` }); rec.message = `Applied to ${c.accountNo}, expiry ${r.customer.expiresAt}`; db.save(); }
+  return { ResultCode: 0, ResultDesc: 'Accepted' };
+});
+
+// --- admin M-Pesa endpoints
+app.get('/api/mpesa', req => db.col('mpesa').filter(r => !req.query.status || r.status === req.query.status).slice(-500).reverse().map(r => ({ ...r, customerName: r.customerId ? db.get('customers', r.customerId)?.name : null })));
+app.get('/api/mpesa/callbacks', () => db.col('mpesaCallbacks').slice(-100).reverse());
+app.post('/api/mpesa/test', async () => {
+  const cfg = settings().mpesa;
+  if (cfg.mode === 'simulate') return { ok: true, message: 'Mode is "simulate" - no connection needed. Switch to sandbox to test your Daraja keys.' };
+  _mpKey = '';
+  const t = await mp().token().catch(e => { throw new HttpError(502, e.message); });
+  return { ok: true, message: `Connected to Daraja ${cfg.mode}. Access token ${t.slice(0, 6)}... received.` };
+});
+app.post('/api/mpesa/stk', async req => startPayment({ phone: req.body.phone, amount: req.body.amount, purpose: req.body.customerId ? 'account' : 'test', payload: { customerId: req.body.customerId ? Number(req.body.customerId) : null, by: req.user.username }, reference: req.body.reference || 'TEST', description: 'Test' }));
+FULFIL.test = async (rec, receipt) => ({ message: `Test payment of ${rec.amount} received (${receipt})` });
+app.post('/api/mpesa/:id/recheck', async req => { const r = db.get('mpesa', req.params.id); if (!r) throw new HttpError(404, 'Not found'); r.lastQueryAt = null; r.createdAt = r.createdAt; await pollMpesa(); return r; });
+app.post('/api/mpesa/:id/allocate', async req => {
+  const r = db.get('mpesa', req.params.id);
+  const c = db.get('customers', req.body.customerId);
+  if (!r || r.status !== 'unmatched') throw new HttpError(400, 'Only unmatched C2B payments can be allocated');
+  if (!c) throw new HttpError(400, 'Choose a customer');
+  const res = await applyPayment({ customerId: c.id, amount: r.amount, method: 'mpesa', reference: r.receipt, by: req.user.username, note: 'Manually allocated C2B' });
+  Object.assign(r, { status: 'success', customerId: c.id, message: `Allocated to ${c.accountNo} by ${req.user.username}` });
+  db.save();
+  return res;
+});
+app.post('/api/mpesa/c2b/register', async () => {
+  const cfg = settings().mpesa;
+  if (!cfg.callbackBase) throw new HttpError(400, 'Set "Public base URL" first (a https tunnel to this server)');
+  const base = cfg.callbackBase.replace(/\/$/, '');
+  return mp().c2bRegister({ confirmationUrl: base + '/api/portal/mpesa/c2b/confirmation', validationUrl: base + '/api/portal/mpesa/c2b/validation' }).catch(e => { throw new HttpError(502, e.message); });
+});
+app.post('/api/mpesa/c2b/simulate', async req => {
+  if (settings().mpesa.mode === 'simulate') {
+    // no Daraja: feed our own confirmation endpoint, exactly what Safaricom would POST
+    const body = { TransactionType: 'Pay Bill', TransID: 'SIM' + rand(7, RECEIPT_CHARS), TransTime: require('./mpesa').timestamp(), TransAmount: String(req.body.amount), BusinessShortCode: settings().mpesa.shortcode, BillRefNumber: req.body.billRef, MSISDN: normalizePhone(req.body.phone || '254708374149'), FirstName: 'John', LastName: 'Doe' };
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/portal/mpesa/c2b/confirmation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return { simulated: true, sent: body, response: await r.json() };
+  }
+  return mp().c2bSimulate({ amount: req.body.amount, phone: req.body.phone || '254708374149', billRef: req.body.billRef }).catch(e => { throw new HttpError(502, e.message); });
+});
+app.post('/api/messaging/test', req => {
+  const rec = sendSms(need(req.body.to, 'Enter a phone number'), req.body.message || `Test message from ${settings().companyName} (OneISP simulator)`, null, 'test', req.body.channel);
+  return { ok: true, id: rec?.id };
+});
+app.get('/api/sms/:id', req => db.get('sms', req.params.id) || {});
+
+// ---------------------------------------------------------------- customer portals (public)
 app.get('/api/portal/site/:id', req => {
   const s = siteOr404(req.params.id);
-  return { site: { id: s.id, name: s.name }, company: settings().companyName, currency: settings().currency, paybill: settings().paybill, packages: db.find('packages', p => p.type === 'hotspot' && p.public !== false) };
+  return { site: { id: s.id, name: s.name }, company: settings().companyName, currency: settings().currency, paybill: settings().paybill, mpesaMode: settings().mpesa.mode, sendVia: settings().messaging.hotspotChannel, packages: db.find('packages', p => p.type === 'hotspot' && p.public !== false) };
 });
-app.post('/api/portal/hotspot/pay', req => {
+app.post('/api/portal/hotspot/pay', async req => {
   const site = siteOr404(req.body.siteId);
   const pkg = db.get('packages', req.body.packageId);
   if (!pkg || pkg.type !== 'hotspot') throw new HttpError(400, 'Choose a package');
-  return startStk({
-    phone: req.body.phone, amount: pkg.price, onSuccess: async () => {
-      const mac = fmtMac(req.body.mac);
-      let c = mac && db.findOne('customers', x => x.connectionType === 'hotspot' && x.siteId === site.id && x.macAddress === mac);
-      if (!c) c = createCustomerRecord({ name: `Hotspot ${req.body.phone}`, phone: req.body.phone, connectionType: 'hotspot', siteId: site.id, packageId: pkg.id, macAddress: mac, username: 'hs' + rand(5, '0123456789'), password: rand(4, '0123456789') });
-      else { c.packageId = pkg.id; c._profileChanged = true; }
-      await applyPayment({ customerId: c.id, amount: pkg.price, method: 'mpesa', by: 'hotspot-portal' });
-      delete c._profileChanged;
-      return { username: c.username, password: c.password, expiresAt: c.expiresAt, message: 'Payment received. Logging you in...' };
-    },
-  });
+  return startPayment({ phone: req.body.phone, amount: pkg.price, purpose: 'hotspot', payload: { siteId: site.id, packageId: pkg.id, mac: req.body.mac, ip: req.body.ip }, reference: 'WIFI', description: pkg.name });
 });
-app.get('/api/portal/txn/:id', req => { const t = txns.get(req.params.id); if (!t) throw new HttpError(404, 'Unknown transaction'); return t; });
+app.get('/api/portal/txn/:id', req => { const t = db.findOne('mpesa', r => r.token === req.params.id); if (!t) throw new HttpError(404, 'Unknown transaction'); return publicTxn(t); });
+// One box on the portal accepts both printed vouchers and codes bought with M-Pesa.
 app.post('/api/portal/voucher', async req => {
-  const code = String(need(req.body.code, 'Enter voucher code')).trim().toUpperCase();
+  const code = String(need(req.body.code, 'Enter your code')).trim().toUpperCase();
   const v = db.findOne('vouchers', x => x.code.toUpperCase() === code);
-  if (!v) throw new HttpError(400, 'Invalid voucher');
-  if (v.status === 'expired' || (v.expiresAt && new Date(v.expiresAt) < now())) throw new HttpError(400, 'Voucher expired');
-  if (v.status === 'unused') await useVoucher(v, req.body.mac);
-  return { username: v.code, password: v.code, expiresAt: v.expiresAt };
+  if (v) {
+    if (v.status === 'expired' || (v.expiresAt && new Date(v.expiresAt) < now())) throw new HttpError(400, 'Voucher expired');
+    if (v.status === 'unused') await useVoucher(v, req.body.mac);
+    return { username: v.code, password: v.code, expiresAt: v.expiresAt };
+  }
+  const c = db.findOne('customers', x => x.connectionType === 'hotspot' && x.username.toUpperCase() === code);
+  if (!c) throw new HttpError(400, 'Invalid code');
+  if (computeStatus(c) !== 'active') throw new HttpError(400, `Code ${code} has expired - buy a new package`);
+  return { username: c.username, password: c.password, expiresAt: c.expiresAt };
 });
+app.post('/api/portal/hotspot/resend', req => {
+  let phone;
+  try { phone = normalizePhone(need(req.body.phone, 'Enter the phone number you paid with')); } catch (e) { throw new HttpError(400, e.message); }
+  const c = db.findOne('customers', x => x.connectionType === 'hotspot' && x.siteId === Number(req.body.siteId) && x.phone === phone && computeStatus(x) === 'active');
+  if (!c) throw new HttpError(404, 'No active WiFi package for that number');
+  const site = siteOf(c);
+  sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site?.name, receipt: '-' }), c.id, 'hotspot-code', settings().messaging.hotspotChannel);
+  return { message: `Code re-sent to ${phone} by ${settings().messaging.hotspotChannel}` };
+});
+function findAccount(key) {
+  key = String(need(key, 'Enter account number')).trim().toLowerCase();
+  let p = null; try { p = normalizePhone(key); } catch { /* not a phone */ }
+  return db.findOne('customers', x => x.accountNo.toLowerCase() === key || x.username.toLowerCase() === key || (p && (() => { try { return normalizePhone(x.phone) === p; } catch { return false; } })()));
+}
 app.post('/api/portal/account', req => {
-  const key = String(need(req.body.account, 'Enter account number')).trim().toLowerCase();
-  const c = db.findOne('customers', x => x.accountNo.toLowerCase() === key || x.username.toLowerCase() === key || x.phone === key);
+  const c = findAccount(req.body.account);
   if (!c) throw new HttpError(404, 'Account not found');
   const d = decorate(c);
-  return { accountNo: d.accountNo, name: d.name, packageName: d.packageName, price: d.price, status: d.status, expiresAt: d.expiresAt, balance: d.balance, currency: settings().currency, paybill: settings().paybill, phone: d.phone };
+  return { accountNo: d.accountNo, name: d.name, packageName: d.packageName, price: d.price, status: d.status, expiresAt: d.expiresAt, balance: d.balance, currency: settings().currency, paybill: settings().paybill, phone: d.phone, mpesaMode: settings().mpesa.mode,
+    payments: db.find('payments', p => p.customerId === c.id).slice(-5).reverse().map(p => ({ date: p.createdAt, amount: p.amount, reference: p.reference })) };
 });
-app.post('/api/portal/account/pay', req => {
-  const c = db.findOne('customers', x => x.accountNo === req.body.account);
+app.post('/api/portal/account/pay', async req => {
+  const c = findAccount(req.body.account);
   if (!c) throw new HttpError(404, 'Account not found');
-  const amount = Number(req.body.amount || pkgOf(c)?.price);
-  return startStk({ phone: req.body.phone || c.phone, amount, onSuccess: async () => { const r = await applyPayment({ customerId: c.id, amount, method: 'mpesa', by: 'customer-portal' }); return { expiresAt: r.customer.expiresAt, message: `Paid ${amount}. New expiry ${new Date(r.customer.expiresAt).toLocaleString()}` }; } });
+  return startPayment({ phone: req.body.phone || c.phone, amount: Number(req.body.amount || pkgOf(c)?.price), purpose: 'account', payload: { customerId: c.id, by: 'customer-portal' }, reference: c.accountNo, description: 'Internet' });
 });
 
 // ---------------------------------------------------------------- public API v1 (used by SmartOLT)
@@ -814,11 +1085,11 @@ async function expiryJob() {
       c.status = st;
       db.save();
       if (st === 'expired' && prev === 'active') {
-        smsTemplate(c, 'expired');
+        if (c.connectionType !== 'hotspot') smsTemplate(c, 'expired');
         await provision(c, `Auto-expire ${c.accountNo}`);
       }
     }
-    if (st === 'active' && s.reminderDays > 0 && c.reminderSentFor !== c.expiresAt && new Date(c.expiresAt) - now() < s.reminderDays * 864e5) {
+    if (st === 'active' && c.connectionType !== 'hotspot' && s.reminderDays > 0 && c.reminderSentFor !== c.expiresAt && new Date(c.expiresAt) - now() < s.reminderDays * 864e5) {
       c.reminderSentFor = c.expiresAt;
       smsTemplate(c, 'reminder');
       db.save();
@@ -867,6 +1138,7 @@ async function bootstrapSimRouters() {
 
 bootstrapSimRouters().then(() => tick(true));
 setInterval(() => tick(false), 20000);
+setInterval(() => pollMpesa().catch(e => console.error('mpesa poll', e)), 4000);
 setInterval(() => tick(true), 60000);
 process.on('SIGINT', () => { db.flush(); process.exit(0); });
 process.on('SIGTERM', () => { db.flush(); process.exit(0); });

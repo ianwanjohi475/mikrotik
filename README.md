@@ -52,9 +52,19 @@ To go live, follow [`docs/MIKROTIK-LAB.md`](docs/MIKROTIK-LAB.md). In short:
 4. Edit the site: set mode to **live**, host to the CHR's IP, and user/password to `oneisp` / `oneisp123` (created by the script). Click **Test connection**, then **Re-provision all**.
 5. Open WinBox → PPP → Secrets. Your OneISP customers are now on the router.
 
+## Real payments and messages (optional)
+
+Everything starts **simulated**. You can switch to real sandbox services, all set up in OneISP → Settings:
+
+- **M-Pesa (Safaricom Daraja):** STK push (PIN prompt on the phone), status polling so it works without a public URL, callbacks, and C2B paybill with an allocate option for unknown accounts.
+- **WhatsApp (Twilio sandbox or Meta Cloud API) and SMS (Africa's Talking sandbox):** welcome, payment, reminder and credential messages, and **hotspot codes sent by WhatsApp after payment**.
+
+Step by step: [`docs/PAYMENTS-MESSAGING.md`](docs/PAYMENTS-MESSAGING.md).
+
 ## Guides
 
 - [`docs/MIKROTIK-LAB.md`](docs/MIKROTIK-LAB.md): the VirtualBox lab, then MikroTik topic by topic (interfaces, IP, DHCP, DNS, NAT, firewall, PPPoE, hotspot, queues, VLANs, routing, WireGuard, scripting, backups), with exercises that use OneISP.
+- [`docs/PAYMENTS-MESSAGING.md`](docs/PAYMENTS-MESSAGING.md): connecting real M-Pesa (Daraja), WhatsApp and SMS sandboxes.
 - [`docs/SMARTOLT-GPON.md`](docs/SMARTOLT-GPON.md): GPON basics, optical budget, a Huawei and ZTE command reference, ONU troubleshooting, and how fiber customers reach the MikroTik PPPoE server.
 
 ## Project layout

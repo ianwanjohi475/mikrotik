@@ -8,12 +8,28 @@ const DEFAULT_SETTINGS = {
   serverIp: '192.168.56.1', // IP of the PC running OneISP, as seen by the MikroTik (VirtualBox host-only adapter)
   apiToken: 'oneisp-demo-token',
   smartolt: { url: 'http://localhost:4000', token: 'smartolt-demo-token' },
+  // M-Pesa (Safaricom Daraja). mode: simulate | sandbox | production.
+  // 174379 + this passkey are Safaricom's public sandbox test values; your consumer key/secret go in Settings.
+  mpesa: {
+    mode: 'simulate', consumerKey: '', consumerSecret: '', shortcode: '174379', type: 'paybill', till: '',
+    passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
+    callbackBase: '', // public https URL of this server (cloudflared/ngrok) for callbacks + C2B; optional for STK
+    c2bShortcode: '600982', c2bRejectUnknown: false, baseUrl: '',
+  },
+  // Message delivery. provider "simulate" only writes to the outbox.
+  messaging: {
+    defaultChannel: 'sms', hotspotChannel: 'whatsapp',
+    sms: { provider: 'simulate', sandbox: true, username: 'sandbox', apiKey: '', senderId: '' },
+    whatsapp: { provider: 'simulate', token: '', phoneNumberId: '', apiVersion: 'v21.0', template: '', templateLang: 'en_US', templateHasParam: false, twilioSid: '', twilioToken: '', twilioFrom: '+14155238886' },
+  },
   smsTemplates: {
     welcome: 'Welcome to {company}, {name}! Account {account}. Username {username} password {password}. Package {package} expires {expiry}. Pay via paybill {paybill} acc {account}.',
     payment: 'Dear {name}, we received {currency} {amount}. Your {package} is active until {expiry}. Thank you!',
     reminder: 'Dear {name}, your {package} expires on {expiry}. Pay {currency} {price} to paybill {paybill} account {account} to stay connected.',
     expired: 'Dear {name}, your internet has expired. Pay {currency} {price} to paybill {paybill} account {account} to reconnect.',
     ticket: 'Dear {name}, ticket {ticket} has been opened. Our team will contact you shortly.',
+    hotspotCode: '{company} WiFi: your code is {code} (valid until {expiry}, {package}). On the WiFi login page enter the code. M-Pesa ref {receipt}.',
+    credentials: 'Dear {name}, your {company} internet login: username {username} password {password}. Account {account}, package {package}.',
   },
 };
 

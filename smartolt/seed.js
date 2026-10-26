@@ -43,7 +43,7 @@ function seed(db) {
   const down = [sp('5M', 'download', 5120, 11), sp('10M', 'download', 10240, 12), sp('20M', 'download', 20480, 13), sp('50M', 'download', 51200, 14), sp('100M', 'download', 102400, 15)];
   const up = [sp('2M-up', 'upload', 2048, 21), sp('5M-up', 'upload', 5120, 22), sp('10M-up', 'upload', 10240, 23), sp('20M-up', 'upload', 20480, 24)];
 
-  [[100, 'Internet PPPoE'], [200, 'Hotspot'], [300, 'Management TR069'], [400, 'Business static']].forEach(([vlan, description]) => db.insert('vlans', { vlan, description, oltId: null }));
+  [[69, 'svlan - Mgmt / TR069'], [100, 'Internet PPPoE'], [200, 'Hotspot'], [400, 'Business static'], [440, 'cvlan']].forEach(([vlan, description]) => db.insert('vlans', { vlan, description, oltId: null }));
 
   const now = Date.now();
   const make = (i, olt, board, port, onuId, extra = {}) => {

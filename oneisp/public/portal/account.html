@@ -13,14 +13,16 @@ async function check() {
   $('#msg').innerHTML = '';
   try {
     const a = await post('/api/portal/account', { account: $('#acc').value });
-    $('#info').innerHTML = `<h2>${a.name}</h2><div class="kv"><div>Account</div><div>${a.accountNo}</div><div>Package</div><div>${a.packageName}</div><div>Status</div><div><b>${a.status}</b></div><div>Expires</div><div>${new Date(a.expiresAt).toLocaleString()}</div><div>Balance</div><div>${a.currency} ${a.balance}</div><div>Paybill</div><div>${a.paybill} acc ${a.accountNo}</div></div>
+    $('#info').innerHTML = `<h2>${a.name}</h2><div class="kv"><div>Account</div><div>${a.accountNo}</div><div>Package</div><div>${a.packageName}</div><div>Status</div><div><b>${a.status}</b></div><div>Expires</div><div>${new Date(a.expiresAt).toLocaleString()}</div><div>Balance</div><div>${a.currency} ${a.balance}</div><div>Paybill</div><div>${a.paybill} acc ${a.accountNo}</div></div>${a.payments.length ? '<h2>Recent payments</h2>' + a.payments.map(p => `<div class="muted">${new Date(p.date).toLocaleDateString()} &middot; ${a.currency} ${p.amount} &middot; ${p.reference}</div>`).join('') : ''}
       <input id="phone" value="${a.phone || ''}" placeholder="M-Pesa phone"><input id="amt" type="number" value="${a.price}"><button id="pay">Pay ${a.currency} via M-Pesa</button>`;
     $('#pay').onclick = async () => {
       $('#pay').disabled = true;
       try {
-        const t = await post('/api/portal/account/pay', { account: a.accountNo, phone: $('#phone').value, amount: $('#amt').value });
-        msg(t.message);
-        const poll = setInterval(async () => { const s = await (await fetch('/api/portal/txn/' + t.id)).json(); if (s.status !== 'pending') { clearInterval(poll); msg(s.message, s.status === 'success' ? 'ok' : 'bad'); setTimeout(check, 1500); } }, 1500);
+        let t = await post('/api/portal/account/pay', { account: a.accountNo, phone: $('#phone').value, amount: $('#amt').value });
+        msg('<b>Check your phone</b> and enter your M-Pesa PIN.<br>' + t.message + '<div class="spin"></div>');
+        for (let i = 0; i < 70 && t.status === 'pending'; i++) { await new Promise(r => setTimeout(r, 3000)); t = await (await fetch('/api/portal/txn/' + t.id)).json(); }
+        msg(t.message, t.status === 'success' ? 'ok' : 'bad');
+        if (t.status === 'success') setTimeout(check, 2500); else $('#pay').disabled = false;
       } catch (e) { msg(e.message, 'bad'); $('#pay').disabled = false; }
     };
   } catch (e) { $('#info').innerHTML = ''; msg(e.message, 'bad'); }

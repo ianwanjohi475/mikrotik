@@ -45,7 +45,7 @@ function modal(title, body, { wide, submit = 'Save', onSubmit } = {}) {
   f.onsubmit = async e => { e.preventDefault(); if (!onSubmit) return close(); const b = $('.modal-foot .primary', bg); b.disabled = true; try { if ((await onSubmit(formData(f), f)) !== false) close(); } catch (err) { fail(err); } finally { b.disabled = false; } };
   return { el: f, close };
 }
-function formData(f) { const o = {}; $$('[name]', f).forEach(i => { o[i.name] = i.type === 'checkbox' ? i.checked : i.value; }); return o; }
+function formData(f) { const o = {}; $$('[name]', f).forEach(i => { if (i.type === 'radio') { if (i.checked) o[i.name] = i.value; return; } o[i.name] = i.type === 'checkbox' ? i.checked : i.value; }); return o; }
 function field(f, v = {}) {
   const val = v[f.name] ?? f.value ?? '';
   const cls = f.full ? 'full' : '';
@@ -148,7 +148,7 @@ routes.unconfigured = async page => {
 function authorizeForm(u = {}) {
   const olt = META.olts.find(o => o.id === u.oltId) || META.olts[0];
   const guessType = META.onuTypes.find(t => t.name.replace('ZTE-', '') === String(u.equipmentId || '').replace('ZTE-', '')) || META.onuTypes.find(t => t.vendor === olt.vendor);
-  const v = { oltId: olt.id, board: u.board ?? ponBoards(olt)[0]?.slot, port: u.port ?? 0, sn: u.sn || '', onuTypeId: guessType?.id, mode: guessType?.modes.includes('routing') ? 'routing' : 'bridging', vlan: 100, wanMode: 'pppoe', downloadProfileId: META.speedProfiles.find(s => s.type === 'download')?.id, uploadProfileId: META.speedProfiles.find(s => s.type === 'upload')?.id };
+  const v = { oltId: olt.id, board: u.board ?? ponBoards(olt)[0]?.slot, port: u.port ?? 0, sn: u.sn || '', onuTypeId: guessType?.id, mode: guessType?.modes.includes('routing') ? 'routing' : 'bridging', vlan: 100, wanMode: 'pppoe', mgmtVlan: 69, configMethod: 'omci', tr069Profile: 'SmartOLT', mgmtMode: 'dhcp', downloadProfileId: META.speedProfiles.find(s => s.type === 'download')?.id, uploadProfileId: META.speedProfiles.find(s => s.type === 'upload')?.id };
   const m = modal('Authorize ONU', `<div class="lesson small"><b>Tip:</b> search a OneISP customer to fill name, address and the PPPoE username/password - the ONU will dial PPPoE to your MikroTik with the same account OneISP created.</div>
     <div class="row" style="margin-bottom:10px"><input id="cs" placeholder="Search OneISP customer (name, account, phone)" style="flex:1"><button type="button" class="btn" id="csb">Search</button></div><div id="cr"></div><div id="af"></div>`, {
     wide: true, submit: 'Authorize', onSubmit: async val => { const o = await POST('/api/onus/authorize', val); const d = await GET(`/api/onus/${o.id}`); showCli(d.cli, 'Authorization commands sent to the OLT'); toast(`${o.sn} authorized`, 'ok'); location.hash = `#/onu/${o.id}`; },
@@ -162,12 +162,15 @@ function authorizeForm(u = {}) {
       { name: 'sn', label: 'SN', required: true }, { name: 'onuTypeId', label: 'ONU type', type: 'select', options: META.onuTypes.map(t => ({ value: t.id, label: `${t.name} (${t.ethPorts} eth${t.wifi ? ', WiFi' : ''}${t.catv ? ', CATV' : ''})` })) },
       { name: 'mode', label: 'ONU mode', type: 'select', options: [{ value: 'routing', label: 'Routing (ONU dials PPPoE / DHCP itself)' }, { value: 'bridging', label: 'Bridging (customer router behind ONU does PPPoE)' }] },
       { name: 'vlan', label: 'User VLAN-ID', type: 'select', options: META.vlans.map(x => ({ value: x.vlan, label: `${x.vlan} - ${x.description}` })) },
-      { name: 'wanMode', label: 'WAN mode (routing)', type: 'select', options: ['pppoe', 'dhcp', 'static'] }, { name: 'externalId', label: 'OneISP customer ID (external ID)' },
+      { name: 'wanMode', label: 'WAN mode (routing)', type: 'select', options: [{ value: 'pppoe', label: 'PPPoE' }, { value: 'dhcp', label: 'DHCP' }, { value: 'static', label: 'Static IP' }, { value: 'onu_webpage', label: 'Setup via ONU webpage' }] }, { name: 'externalId', label: 'OneISP customer ID (external ID)' },
       { name: 'pppoeUser', label: 'PPPoE username' }, { name: 'pppoePass', label: 'PPPoE password' },
       { name: 'zoneId', label: 'Zone', type: 'select', blank: '- none -', options: META.zones.map(z => ({ value: z.id, label: z.name })) }, { name: 'odbId', label: 'ODB (splitter)', type: 'select', blank: '- none -', options: META.odbs.map(z => ({ value: z.id, label: `${z.name} (${z.splitter})` })) },
       { name: 'odbPort', label: 'ODB port' }, { name: 'onuId', label: 'ONU ID (blank = next free)' },
       { name: 'downloadProfileId', label: 'Download speed profile', type: 'select', options: META.speedProfiles.filter(s => s.type === 'download').map(s => ({ value: s.id, label: s.name })) },
       { name: 'uploadProfileId', label: 'Upload speed profile', type: 'select', options: META.speedProfiles.filter(s => s.type === 'upload').map(s => ({ value: s.id, label: s.name })) },
+      { name: 'configMethod', label: 'WAN config method', type: 'select', options: [{ value: 'omci', label: 'OMCI (OLT pushes WAN)' }, { value: 'tr069', label: 'TR069 (ACS pushes WAN)' }] }, { name: 'pppoePlus', label: 'PPPoE-plus', type: 'checkbox' },
+      { name: 'tr069Profile', label: 'TR069 profile', type: 'select', options: ['SmartOLT', 'Disabled'] }, { name: 'mgmtMode', label: 'Mgmt IP mode', type: 'select', options: [{ value: 'dhcp', label: 'DHCP' }, { value: 'inactive', label: 'Inactive' }] },
+      { name: 'mgmtVlan', label: 'Mgmt VLAN-ID', type: 'select', options: META.vlans.map(x => ({ value: x.vlan, label: `${x.vlan} - ${x.description}` })) },
       { name: 'name', label: 'Name', required: true }, { name: 'address', label: 'Address or comment' }, { name: 'phone', label: 'Contact' }, { name: 'catv', label: 'CATV enabled', type: 'checkbox' },
     ], cur);
     $('[name=oltId]', m.el).onchange = () => draw({ board: ponBoards(META.olts.find(x => x.id === Number($('[name=oltId]', m.el).value)))[0]?.slot });
@@ -226,40 +229,132 @@ routes.configured = async page => {
 };
 
 // ================================================= ONU DETAIL
+// ---- ONU page helpers
+const radios = (name, opts, val) => `<span class="radios">${opts.map(([v, l]) => `<label class="radio"><input type="radio" name="${name}" value="${v}" ${String(v) === String(val) ? 'checked' : ''}> ${l}</label>`).join('')}</span>`;
+const frow = (label, html, cls = '') => `<div class="frow ${cls}"><div class="fl">${label}</div><div class="fv">${html}</div></div>`;
+const vlanSelect = (name, val) => `<select name="${name}">${META.vlans.map(v => `<option value="${v.vlan}" ${Number(v.vlan) === Number(val) ? 'selected' : ''}>${v.vlan} - ${esc(v.description)}</option>`).join('')}</select>`;
+function rxBox(title, v, kind) {
+  if (v === null || v === undefined) return `<div class="rxbox"><div class="rt">${title}</div><div class="rv muted">-</div></div>`;
+  const [warn, crit] = kind === 'onu' ? [META.settings.signalWarning, META.settings.signalCritical] : [-28, -31];
+  const cls = v < crit ? 'critical' : v < warn ? 'warning' : 'good';
+  const pos = Math.max(2, Math.min(98, ((v + 35) / 27) * 100)); // scale -35 .. -8 dBm
+  return `<div class="rxbox"><div class="rt">${title}</div><div class="rv rv-${cls}">${v.toFixed(2)} <small>dBm</small></div><div class="rbar"><i style="left:${pos}%"></i></div></div>`;
+}
+function onuPicture(t) {
+  const n = t?.ethPorts || 1;
+  const ports = Array.from({ length: n }, (_, i) => `<rect x="${150 + i * 46}" y="40" width="38" height="34" rx="3" fill="#f4c542" stroke="#9a7b12"/><rect x="${158 + i * 46}" y="48" width="22" height="16" fill="#6b5410"/><text x="${169 + i * 46}" y="88" text-anchor="middle">LAN${n - i}</text>`).join('');
+  return `<svg class="onupic" viewBox="0 0 ${200 + n * 46 + 130} 110"><rect x="2" y="12" width="${196 + n * 46 + 126}" height="86" rx="18" fill="#f2f2f2" stroke="#ccc"/>
+    <rect x="30" y="40" width="40" height="34" rx="3" fill="#333"/><text x="50" y="88" text-anchor="middle">OPTICAL</text>${t?.voip ? `<rect x="90" y="44" width="34" height="28" rx="3" fill="#777"/><text x="107" y="88" text-anchor="middle">TEL</text>` : ''}${ports}
+    ${t?.wifi ? `<text x="${170 + n * 46}" y="60" font-size="22">&#128246;</text>` : ''}<rect x="${215 + n * 46}" y="44" width="22" height="28" fill="#222"/><text x="${226 + n * 46}" y="88" text-anchor="middle">POWER</text><circle cx="${270 + n * 46}" cy="58" r="13" fill="#e53935"/></svg>`;
+}
+
 routes['onu/:id'] = async (page, id) => {
   const d = await GET(`/api/onus/${id}`);
   const o = d.onu;
-  const rows = (pairs) => `<div class="kv">${pairs.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join('')}</div>`;
-  page.innerHTML = `<div class="panel"><div class="toolbar"><h2>${stIcon(o.status)} ${esc(o.name)} <span class="muted small mono">${esc(o.sn)}</span></h2>
-    <div class="acts"><button class="btn" id="getStatus">Get status</button><button class="btn" id="running">Show running config</button><button class="btn" id="ping">Ping</button><button class="btn" id="live">LIVE!</button></div></div>
-  <div class="grid g2"><div>${rows([['OLT', esc(o.oltName)], ['Board', o.board], ['Port', o.port], ['ONU', `<span class="mono">${esc(o.pon)}</span>`], ['GPON channel', 'GPON'], ['SN', `<span class="mono">${esc(o.sn)}</span>`], ['ONU type', esc(o.onuTypeName)], ['Zone', esc(o.zoneName)], ['ODB (Splitter)', `${esc(o.odbName)} port ${esc(o.odbPort || '-')}`], ['Name', esc(o.name)], ['Address or comment', esc(o.address)], ['Contact', esc(o.phone)], ['Authorization date', dt(o.authorizedAt) + ` (${esc(o.via)})`], ['ONU external ID', o.externalId ? `${o.externalId} <span class="lbl l-info">OneISP</span> ${o.externalAccount ? esc(o.externalAccount) + ' ' + esc(o.externalStatus || '') : ''}` : '<span class="muted">not linked</span>']])}</div>
-  <div>${rows([['Status', `${lbl(STATUS[o.status][1], o.status)} ${o.uptime ? `(${o.uptime})` : ''}`], ['ONU/OLT Rx signal', o.status === 'online' ? `${sig(o)} / <span class="mono">${o.oltRxPower.toFixed(2)} dBm</span> ${lbl(o.signal)}` : '-'], ['Tx power', o.status === 'online' ? `${o.txPower.toFixed(2)} dBm` : '-'], ['Distance', `${o.distance} m`], ['Temperature', o.status === 'online' ? `${o.temperature.toFixed(0)} &deg;C` : '-'], ['Last down cause', esc(o.lastDownCause || '-') + (o.lastDownAt ? ` at ${dt(o.lastDownAt)}` : '')], ['Attached VLANs', o.vlan], ['ONU mode', `${o.mode === 'routing' ? 'Routing' : 'Bridging'}${o.mode === 'routing' ? ` - WAN ${o.wanMode.toUpperCase()}${o.wanIp && o.status === 'online' ? ' ' + o.wanIp : ''}` : ''}`], ['TR069', 'Active (simulated ACS)'], ['Mgmt IP', o.status === 'online' ? `10.30.${o.oltId}.${(o.id % 250) + 2}` : '-'], ['WiFi', esc(o.wifiSsid || '-')], ['CATV', o.catv ? 'Enabled' : 'Disabled']])}</div></div></div>
-  <div class="grid g2"><div class="panel"><h3>Traffic (last hours)</h3>${lineChart([{ name: 'Download', color: '#1e88e5', points: o.history.traf.map(p => [p[0], p[1]]) }, { name: 'Upload', color: '#43a047', points: o.history.traf.map(p => [p[0], p[2]]) }], { min: 0, fmt: kbps })}</div>
+  const type = META.onuTypes.find(t => t.id === o.onuTypeId);
+  const olt = META.olts.find(x => x.id === o.oltId);
+  const dc = d.disconnections;
+  const link = (txt, act, italic) => `<a href="javascript:void(0)" class="lnk ${italic ? 'none' : ''}" data-act="${act}">${txt}</a>`;
+  const val = v => (v === '' || v === null || v === undefined ? '<i class="none">None</i>' : esc(v));
+  const mgmtOn = o.tr069Profile !== 'Disabled' && o.mgmtMode !== 'inactive';
+  const recent = o.tr069LastInform && Date.now() - new Date(o.tr069LastInform) < 900000;
+  const wanTxt = o.mode !== 'routing' ? '' : o.wanMode === 'onu_webpage' ? 'Setup via ONU webpage' : `${{ pppoe: 'PPPoE', dhcp: 'DHCP', static: 'Static IP' }[o.wanMode]} (${o.configMethod === 'tr069' ? 'TR069' : 'OMCI'})${o.ipProtocol === 'dual' ? ' IPv4/IPv6' : ''}`;
+  page.innerHTML = `<div class="panel onu-page">
+  <span class="dcbadge ${dc.day ? 'on' : ''}">Disconnections: ${dc.day} (24h) &middot; ${dc.week} (7d)</span>
+  <div class="grid g2" style="margin-top:14px"><div class="onu-left">
+    ${frow('OLT &#8599;', `<a href="#/olt/${o.oltId}">${o.oltId} - ${esc(o.oltName)}</a>`)}${frow('Board', esc(o.board))}
+    ${frow('Port', `${link(`${o.port}${o.portName ? ` (${esc(o.portName)})` : ''}`, 'portname')} <a href="#/configured?olt=${o.oltId}&board=${o.board}&port=${o.port}" title="ONUs on this port">&#128200;</a>`)}
+    ${frow('ONU', `<span class="lnkc">${esc(o.vendor === 'ZTE' ? o.pon : `gpon-onu_0/${o.board}/${o.port}:${o.onuId}`)}</span>`)}${frow('GPON channel', '<span class="lnkc">GPON</span>')}
+    ${frow('SN', `<span class="lnkc mono">${esc(o.sn)}</span>`)}${frow('ONU type', link(esc(o.onuTypeName), 'details'))}${frow('Configuration Preset', link('&#9776; ' + (o.preset ? esc(o.preset) : 'None'), 'details'))}
+    ${frow('Zone', link(val(o.zoneName === '-' ? '' : o.zoneName), 'details'))}${frow('Splitter', link(val(o.odbName === '-' ? '' : `${o.odbName} port ${o.odbPort || '?'}`), 'details'))}${frow('Sector', link(val(o.sector), 'details'))}
+    ${frow('Name', link(val(o.name), 'details'))}${frow('Address or comment', link(val(o.address), 'details'))}${frow('Contact', link(val(o.phone), 'details'))}
+    ${frow('Authorization date', `${dt(o.authorizedAt)} <a href="javascript:void(0)" data-act="history">History</a>`)}
+    ${frow('ONU external ID', o.externalId ? `${link(String(o.externalId), 'details')} <span class="lbl l-info">OneISP ${esc(o.externalAccount || '')}</span>` : link('<i>None</i>', 'details'))}
+  </div>
+  <div class="onu-right">
+    <div class="row pic-row">${type?.wifi ? `<div class="wifi"><b>WiFi</b> &#128246;<div class="muted small">Avg <b style="font-size:18px">${o.status === 'online' ? o.wifiAvg ?? '-' : '-'}</b> dBm</div><div class="small">${o.status === 'online' ? o.wifiClients ?? 0 : 0} client(s) ${o.status === 'online' ? lbl((o.wifiAvg ?? -60) > -65 ? 'Good' : 'Weak', (o.wifiAvg ?? -60) > -65 ? 'good' : 'warning') : ''}</div></div>` : ''}${onuPicture(type)}</div>
+    ${frow('Status', `<div class="statbox"><span class="lbl l-${o.status} big">${STATUS[o.status][0]} ${STATUS[o.status][1]}</span> <span class="upt">${o.uptime || ''}</span><a href="javascript:void(0)" data-act="refresh" title="Refresh" class="refr">&#8635;</a><span class="km">${o.distanceKm} km</span></div>`)}
+    ${frow('Rx signal levels', `<div class="rxwrap">${rxBox('ONU Rx 1490nm', o.status === 'online' ? o.rxPower : null, 'onu')}${rxBox('OLT Rx 1310nm', o.status === 'online' ? o.oltRxPower : null, 'olt')}</div>`)}
+    <div style="height:16px"></div>
+    ${frow('TR069 Profile', link(o.tr069Profile === 'Disabled' ? 'Disabled' : `SmartOLT via <span class="lbl l-mgmt">Mgmt IP</span>`, 'mgmt') + (mgmtOn && o.status === 'online' ? ` <span class="small">${recent ? '<span class="dot ok"></span> Recent' : '<span class="dot"></span> No inform'}</span>` : ''))}
+    ${frow('Mgmt IP', link(mgmtOn ? `${o.mgmtMode === 'dhcp' ? 'DHCP' : 'Static'} - vlan: ${o.mgmtVlan}${o.mgmtIp && o.status === 'online' ? ` - ${esc(o.mgmtIp)}` : ''}` : 'Inactive', 'mgmt'))}
+    ${frow('Attached VLANs', link(esc(o.vlan) + (mgmtOn ? `, ${o.mgmtVlan}` : ''), 'mode'))}
+    ${frow('ONU mode', link(o.mode === 'routing' ? `Routing - WAN vlan: ${o.vlan}` : `Bridging - Main VLAN: ${o.vlan}${o.pppoePlus ? ' (PPPoE+)' : ''}`, 'mode'))}
+    ${o.mode === 'routing' ? frow('WAN setup mode', link(wanTxt, 'mode') + (o.wanIp && o.status === 'online' && o.wanMode !== 'onu_webpage' ? ` - <span class="lnkc">${esc(o.wanIp)}</span>` : '')) : ''}
+    ${o.mode === 'routing' && o.wanMode === 'pppoe' ? frow('PPPoE username', `<span class="mono secret" data-v="${esc(o.pppoeUser)}">**********</span> <a href="javascript:void(0)" class="eye">&#128065;</a>`) + frow('PPPoE password', `<span class="mono secret" data-v="${esc(o.pppoePass)}">**********</span> <a href="javascript:void(0)" class="eye">&#128065;</a>`) : ''}
+  </div></div>
+  <div class="row" style="margin-top:18px"><span class="fl" style="width:auto;margin-right:20px"><b>Status</b></span><button class="btn primary bigbtn" id="getStatus">Get status</button><button class="btn primary bigbtn" id="running">Show running-config</button><button class="btn primary bigbtn" id="swinfo">SW info</button><button class="btn primary bigbtn" id="tr069">TR-069</button><button class="btn ok bigbtn" id="live">LIVE!</button></div></div>
+  <div class="grid g2"><div class="panel"><h3>Traffic</h3>${lineChart([{ name: 'Download', color: '#1e88e5', points: o.history.traf.map(p => [p[0], p[1]]) }, { name: 'Upload', color: '#43a047', points: o.history.traf.map(p => [p[0], p[2]]) }], { min: 0, fmt: kbps })}</div>
   <div class="panel"><h3>Signal (dBm)</h3>${lineChart([{ name: 'ONU Rx', color: '#fb8c00', points: o.history.sig.map(p => [p[0], p[1]]) }, { name: 'OLT Rx', color: '#8e24aa', points: o.history.sig.map(p => [p[0], p[2]]) }], { fmt: v => v.toFixed(1) })}</div></div>
-  <div class="grid g2"><div class="panel"><div class="toolbar"><h3>Speed profiles</h3><button class="btn sm" id="eSpeed">Configure</button></div>${rows([['Download', esc(o.downloadName)], ['Upload', esc(o.uploadName)], ['Service-port', o.servicePort ?? '-']])}
-    <h3 style="margin-top:16px">Ethernet ports</h3>${table([{ label: 'Port', key: 'p' }, { label: 'Admin state', key: 'a' }, { label: 'Mode', key: 'm' }, { label: 'DHCP', key: 'd' }], Array.from({ length: META.onuTypes.find(t => t.id === o.onuTypeId)?.ethPorts || 1 }, (_, i) => ({ p: `eth_0/${i + 1}`, a: 'Enabled', m: o.mode === 'routing' ? 'LAN' : `Access VLAN ${o.vlan}`, d: o.mode === 'routing' ? 'ONU' : 'No control' })))}</div>
-  <div class="panel"><div class="toolbar"><h3>WAN / VLAN / WiFi</h3><div class="acts"><button class="btn sm" id="eWan">Configure</button>${o.externalId ? '<button class="btn sm" id="pull">Pull PPPoE from OneISP</button>' : ''}</div></div>
-    ${rows([['Mode', o.mode], ['VLAN', o.vlan], ['WAN', o.mode === 'routing' ? o.wanMode : 'n/a (bridge)'], ['PPPoE username', `<span class="mono">${esc(o.pppoeUser || '-')}</span>`], ['PPPoE password', `<span class="mono">${esc(o.pppoePass || '-')}</span>`], ['WiFi SSID', esc(o.wifiSsid)], ['WiFi password', `<span class="mono">${esc(o.wifiPassword)}</span>`]])}
-    <div class="lesson small">${o.mode === 'routing' ? `Routing: the ONU itself dials PPPoE <b>${esc(o.pppoeUser)}</b> on VLAN ${o.vlan} to your MikroTik PPPoE server. On MikroTik you need a VLAN ${o.vlan} interface with the PPPoE server on it.` : `Bridging: VLAN ${o.vlan} is passed untagged to eth port 1. The customer's own router (or a MikroTik) does PPPoE/DHCP.`}</div></div></div>
-  <div class="panel"><div class="acts"><button class="btn warn" id="reboot">Reboot</button><button class="btn" id="resync">Resync config</button>${o.disabled ? '<button class="btn ok" id="enable">Enable ONU</button>' : '<button class="btn" id="disable">Disable ONU</button>'}<button class="btn" id="move">Move ONU</button><button class="btn" id="edit">Edit details</button><button class="btn bad" id="del">Delete</button></div></div>
+  <div class="grid g2"><div class="panel"><div class="toolbar"><h3>Speed profiles</h3><button class="btn sm" id="eSpeed">Configure</button></div><div class="kv"><div>Download</div><div>${esc(o.downloadName)}</div><div>Upload</div><div>${esc(o.uploadName)}</div><div>Internet service-port</div><div>${o.servicePort ?? '-'}</div><div>Mgmt service-port</div><div>${mgmtOn ? o.mgmtServicePort : '-'}</div></div></div>
+  <div class="panel"><h3>Ethernet ports</h3>${table([{ label: 'Port', key: 'p' }, { label: 'Admin state', key: 'a' }, { label: 'Mode', key: 'm' }, { label: 'DHCP', key: 'd' }], Array.from({ length: type?.ethPorts || 1 }, (_, i) => ({ p: `eth_0/${i + 1}`, a: 'Enabled', m: o.mode === 'routing' ? 'LAN' : `Access VLAN ${o.vlan}`, d: o.mode === 'routing' ? 'ONU' : 'No control' })))}</div></div>
+  <div class="panel"><div class="acts"><button class="btn warn" id="reboot">Reboot</button><button class="btn" id="resync">Resync config</button>${o.disabled ? '<button class="btn ok" id="enable">Enable ONU</button>' : '<button class="btn" id="disable">Disable ONU</button>'}<button class="btn" id="move">Move ONU</button><button class="btn" id="eWifi">WiFi settings</button>${o.externalId ? '<button class="btn" id="pull">Pull PPPoE from OneISP</button>' : ''}<button class="btn" id="ping">Ping</button><button class="btn bad" id="del">Delete</button></div></div>
   <div class="grid g2"><div class="panel"><h3>Commands sent to the OLT for this ONU</h3>${d.cli.map(l => `<div class="small muted">${dt(l.createdAt)} - ${esc(l.action)} (${esc(l.via)})</div><pre>${esc(l.commands.join('\n'))}</pre>`).join('') || '<div class="empty">None yet</div>'}</div>
-  <div class="panel"><h3>Events</h3>${table([{ label: 'Time', render: e => dt(e.createdAt) }, { label: 'Type', render: e => lbl(e.type, e.severity) }, { label: 'Message', key: 'message' }], d.events)}</div></div>`;
+  <div class="panel" id="hist"><h3>Events / history</h3>${table([{ label: 'Time', render: e => dt(e.createdAt) }, { label: 'Type', render: e => lbl(e.type, e.severity) }, { label: 'Message', key: 'message' }], d.events)}</div></div>`;
+
+  const save = async (patch, title) => { const r = await PUT(`/api/onus/${id}`, patch); showCli(r.cli, title); toast('Updated', 'ok'); router(); };
+  $$('.eye').forEach(a => (a.onclick = () => { const s = a.previousElementSibling; s.textContent = s.textContent.startsWith('*') ? s.dataset.v || '(empty)' : '**********'; }));
+
+  const modeModal = () => {
+    const m = modal('Update ONU mode', '<div id="mm"></div>', { submit: 'Update', onSubmit: async v => { const patch = { vlan: v.vlan, mode: v.mode, pppoePlus: v.pppoePlus }; if (v.mode === 'routing') Object.assign(patch, { wanMode: v.wanMode, configMethod: v.configMethod, ipProtocol: v.ipProtocol, pppoeUser: v.pppoeUser, pppoePass: v.pppoePass, staticIp: v.staticIp, staticMask: v.staticMask, staticGateway: v.staticGateway, wanRemoteAccess: v.wanRemoteAccess }); await save(patch, 'Update ONU mode'); } });
+    const draw = cur => {
+      const routing = cur.mode === 'routing';
+      const canRoute = type?.modes.includes('routing');
+      $('#mm', m.el).innerHTML = frow(routing ? 'WAN VLAN-ID' : 'VLAN-ID', vlanSelect('vlan', cur.vlan)) + `<p class="hint">After changing the ${routing ? 'WAN ' : ''}VLAN-ID, please check the Ethernet ports settings and update VLANs as desired.</p>` +
+        frow('ONU mode', radios('mode', canRoute ? [['routing', 'Routing'], ['bridging', 'Bridging']] : [['bridging', 'Bridging']], cur.mode)) +
+        (routing ? frow('WAN mode', radios('wanMode', [['onu_webpage', 'Setup via ONU webpage']], cur.wanMode) + '<div class="muted small" style="margin:6px 0 2px">Settings for compatible ONUs:</div>' + radios('wanMode', [['dhcp', 'DHCP'], ['static', 'Static IP'], ['pppoe', 'PPPoE']], cur.wanMode)) +
+          (cur.wanMode !== 'onu_webpage' ? frow('Config method', radios('configMethod', [['omci', 'OMCI'], ['tr069', 'TR069']], cur.configMethod)) + frow('IP Protocol', radios('ipProtocol', [['ipv4', 'IPv4'], ['dual', 'Dual stack IPv4/IPv6']], cur.ipProtocol)) : '') +
+          (cur.wanMode === 'pppoe' ? frow('Username', `<input name="pppoeUser" value="${esc(cur.pppoeUser || '')}">`) + frow('Password', `<input name="pppoePass" value="${esc(cur.pppoePass || '')}">`) : '') +
+          (cur.wanMode === 'static' ? frow('IP address', `<input name="staticIp" value="${esc(cur.staticIp || '')}" placeholder="10.20.0.50">`) + frow('Mask', `<input name="staticMask" value="${esc(cur.staticMask || '255.255.255.0')}">`) + frow('Gateway', `<input name="staticGateway" value="${esc(cur.staticGateway || '')}">`) : '') : '') +
+        frow('', `<label class="radio"><input type="checkbox" name="pppoePlus" ${cur.pppoePlus ? 'checked' : ''}> PPPoE-plus</label>`) +
+        (routing && cur.wanMode !== 'onu_webpage' ? frow('', `<label class="radio"><input type="checkbox" name="wanRemoteAccess" ${cur.wanRemoteAccess ? 'checked' : ''}> WAN remote access</label>`) : '') +
+        (o.externalId && routing && cur.wanMode === 'pppoe' ? `<p class="hint">Linked to OneISP customer ${o.externalId}: username/password must match the PPP secret on the MikroTik.</p>` : '');
+      $$('input[type=radio]', m.el).forEach(r => (r.onchange = () => draw({ ...cur, ...formData(m.el) })));
+    };
+    draw({ ...o });
+  };
+  const mgmtModal = () => {
+    const m = modal('Update Management and VoIP IP', '<div id="mg"></div>', { submit: 'Update', onSubmit: v => save({ tr069Profile: v.tr069Profile, mgmtMode: v.mgmtMode, mgmtVlan: v.mgmtVlan, mgmtIp: v.mgmtIp, mgmtRemote: v.mgmtRemote }, 'Update Mgmt IP / TR069') });
+    const draw = cur => {
+      $('#mg', m.el).innerHTML = `<div class="sect"><h4>&#9881; TR069 Profile</h4>${frow('TR069 Profile', `<select name="tr069Profile">${['Disabled', 'SmartOLT'].map(x => `<option ${x === cur.tr069Profile ? 'selected' : ''}>${x}</option>`).join('')}</select>`)}${frow('Tr069 interface', 'Mgmt IP')}</div>
+        <div class="sect"><div class="toolbar" style="margin:0"><h4>&#9776; Mgmt IP</h4><span class="muted small">Service-port ID: ${o.mgmtServicePort}</span></div>
+        ${frow('Mgmt IP mode', radios('mgmtMode', [['inactive', 'Inactive'], ['static', 'Static IP'], ['dhcp', 'DHCP']], cur.mgmtMode))}
+        ${cur.mgmtMode === 'static' ? frow('Mgmt IP', `<input name="mgmtIp" value="${esc(cur.mgmtIp || '')}" placeholder="10.67.32.84">`) : '<input type="hidden" name="mgmtIp" value="">'}
+        ${cur.mgmtMode !== 'inactive' ? frow('', `<label class="radio"><input type="checkbox" name="mgmtRemote" ${cur.mgmtRemote ? 'checked' : ''}> Allow remote access to Mgmt IP from everywhere</label>`) + frow('Mgmt VLAN-ID', vlanSelect('mgmtVlan', cur.mgmtVlan)) : ''}</div>
+        <p class="hint">The Mgmt IP is a second WAN on the ONU (own VLAN + service-port). SmartOLT's TR-069 ACS reaches the ONU through it to read WiFi clients, push WAN/WiFi settings, reboot or factory reset.</p>`;
+      $$('input[type=radio]', m.el).forEach(r => (r.onchange = () => draw({ ...cur, ...formData(m.el) })));
+    };
+    draw({ ...o });
+  };
+  const detailsModal = () => modal('Edit ONU details', fields([{ name: 'name', label: 'Name' }, { name: 'address', label: 'Address or comment' }, { name: 'phone', label: 'Contact' }, { name: 'sector', label: 'Sector' }, { name: 'zoneId', label: 'Zone', type: 'select', blank: '-', options: META.zones.map(z => ({ value: z.id, label: z.name })) }, { name: 'odbId', label: 'Splitter (ODB)', type: 'select', blank: '-', options: META.odbs.map(z => ({ value: z.id, label: z.name })) }, { name: 'odbPort', label: 'Splitter port' }, { name: 'onuTypeId', label: 'ONU type', type: 'select', options: META.onuTypes.map(t => ({ value: t.id, label: t.name })) }, { name: 'preset', label: 'Configuration preset' }, { name: 'externalId', label: 'ONU external ID (OneISP customer ID)' }, { name: 'catv', label: 'CATV', type: 'checkbox' }], o), { onSubmit: v => save(v, 'ONU details') });
+  const acts = {
+    mode: modeModal, mgmt: mgmtModal, details: detailsModal, refresh: () => router(),
+    history: () => $('#hist').scrollIntoView({ behavior: 'smooth' }),
+    portname: () => modal(`Port ${o.board}/${o.port} description`, fields([{ name: 'name', label: 'Description (e.g. area served)', value: o.portName }]), { onSubmit: async v => { const r = await PUT(`/api/olts/${o.oltId}/ports/${o.board}/${o.port}`, v); showCli([{ action: 'port-desc', sn: '', oltName: o.oltName, via: 'web', commands: r.cli }]); router(); } }),
+  };
+  $$('[data-act]').forEach(a => (a.onclick = () => acts[a.dataset.act]()));
   const act = async a => { try { const r = await POST(`/api/onus/${id}/${a}`); showCli(r.cli); toast(`${a} sent`, 'ok'); setTimeout(router, 600); } catch (e) { fail(e); } };
-  const edit = async (title, list) => modal(title, fields(list, o), { onSubmit: async v => { const r = await PUT(`/api/onus/${id}`, v); showCli(r.cli); toast('Saved', 'ok'); router(); } });
   $('#reboot').onclick = async () => { if (await confirmBox('Reboot this ONU? It goes offline ~45 seconds.')) act('reboot'); };
   $('#resync').onclick = () => act('resync_config');
   if ($('#disable')) $('#disable').onclick = async () => { if (await confirmBox('Disable (deactivate) this ONU?')) act('disable'); };
   if ($('#enable')) $('#enable').onclick = () => act('enable');
   $('#del').onclick = async () => { if (await confirmBox('Delete this ONU from the OLT? It will reappear in Unconfigured if still connected.')) { await DEL(`/api/onus/${id}`); toast('Deleted', 'ok'); location.hash = '#/configured'; } };
-  $('#getStatus').onclick = async () => { const olt = META.olts.find(x => x.id === o.oltId); const cmd = olt.vendor === 'ZTE' ? `show gpon onu detail-info ${o.pon}\nshow pon power attenuation ${o.pon}` : `enable\nconfig\ndisplay ont info 0 ${o.board} ${o.port} ${o.onuId}\ninterface gpon 0/${o.board}\ndisplay ont optical-info ${o.port} ${o.onuId}\nquit`; const r = await POST(`/api/olts/${o.oltId}/cli`, { command: cmd, session: 'status' + Date.now() }); modal('ONU status from OLT', `<pre>${esc(cmd.split('\n').map(c => '> ' + c).join('\n'))}\n\n${esc(r.output)}</pre>`, { wide: true }); };
+  $('#getStatus').onclick = async () => { const cmd = olt.vendor === 'ZTE' ? `show gpon onu detail-info ${o.pon}\nshow pon power attenuation ${o.pon}` : `enable\nconfig\ndisplay ont info 0 ${o.board} ${o.port} ${o.onuId}\ninterface gpon 0/${o.board}\ndisplay ont optical-info ${o.port} ${o.onuId}\nquit`; const r = await POST(`/api/olts/${o.oltId}/cli`, { command: cmd, session: 'status' + Date.now() }); modal('ONU status from OLT', `<pre>${esc(cmd.split('\n').map(c => '> ' + c).join('\n'))}\n\n${esc(r.output)}</pre>`, { wide: true }); };
   $('#running').onclick = () => modal('Running configuration (what is on the OLT)', `<pre>${esc(d.running.join('\n'))}</pre>`, { wide: true });
-  $('#ping').onclick = async () => { const r = await POST('/api/diagnostics/ping', { onuId: o.id }); modal('Ping ONU WAN', `<pre>${esc(r.output)}</pre>`); };
+  $('#swinfo').onclick = () => modal('ONU software info', `<div class="kv"><div>Vendor</div><div>${esc(type?.vendor || '-')}</div><div>Equipment ID</div><div>${esc(o.onuTypeName)}</div><div>Software version</div><div class="mono">${esc(o.swVersion)}</div><div>Hardware version</div><div class="mono">${esc(o.hwVersion)}</div><div>Ethernet / POTS / WiFi / CATV</div><div>${type?.ethPorts} / ${type?.voip} / ${type?.wifi ? 'yes' : 'no'} / ${type?.catv ? 'yes' : 'no'}</div><div>OLT command</div><div class="mono small">${olt.vendor === 'ZTE' ? `show gpon remote-onu equip ${esc(o.pon)}` : `display ont version 0 ${o.board} ${o.port} ${o.onuId}`}</div></div>`);
+  $('#tr069').onclick = async () => {
+    try {
+      const t = await GET(`/api/onus/${id}/tr069`);
+      const m = modal('TR-069 (ACS view of this ONU)', `<div class="small muted">Last inform: ${dt(t.lastInform)}</div><table>${Object.entries(t.params).map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join('')}</table><div class="acts" style="margin-top:12px"><button type="button" class="btn" data-t="refresh">Get parameters</button><button type="button" class="btn warn" data-t="reboot">Reboot via TR-069</button><button type="button" class="btn bad" data-t="factory_reset">Factory reset</button></div>`, { wide: true });
+      $$('[data-t]', m.el).forEach(b => (b.onclick = async () => { try { const r = await POST(`/api/onus/${id}/tr069`, { action: b.dataset.t }); showCli(r.cli, 'TR-069 RPC'); m.close(); router(); } catch (e) { fail(e); } }));
+    } catch (e) { fail(e); }
+  };
   $('#live').onclick = () => { toast('Live mode: refreshing every 10s'); clearInterval(timer); timer = setInterval(router, 10000); };
-  $('#edit').onclick = () => edit('Edit ONU details', [{ name: 'name', label: 'Name' }, { name: 'address', label: 'Address or comment' }, { name: 'phone', label: 'Contact' }, { name: 'zoneId', label: 'Zone', type: 'select', blank: '-', options: META.zones.map(z => ({ value: z.id, label: z.name })) }, { name: 'odbId', label: 'ODB', type: 'select', blank: '-', options: META.odbs.map(z => ({ value: z.id, label: z.name })) }, { name: 'odbPort', label: 'ODB port' }, { name: 'onuTypeId', label: 'ONU type', type: 'select', options: META.onuTypes.map(t => ({ value: t.id, label: t.name })) }, { name: 'externalId', label: 'OneISP customer ID' }, { name: 'catv', label: 'CATV', type: 'checkbox' }]);
-  $('#eSpeed').onclick = () => edit('Speed profiles', [{ name: 'downloadProfileId', label: 'Download', type: 'select', options: META.speedProfiles.filter(s => s.type === 'download').map(s => ({ value: s.id, label: s.name })) }, { name: 'uploadProfileId', label: 'Upload', type: 'select', options: META.speedProfiles.filter(s => s.type === 'upload').map(s => ({ value: s.id, label: s.name })) }]);
-  $('#eWan').onclick = () => edit('WAN / VLAN / WiFi', [{ name: 'mode', label: 'Mode', type: 'select', options: ['routing', 'bridging'] }, { name: 'vlan', label: 'VLAN', type: 'select', options: META.vlans.map(v => ({ value: v.vlan, label: `${v.vlan} ${v.description}` })) }, { name: 'wanMode', label: 'WAN mode', type: 'select', options: ['pppoe', 'dhcp', 'static'] }, { name: 'staticIp', label: 'Static IP' }, { name: 'pppoeUser', label: 'PPPoE username' }, { name: 'pppoePass', label: 'PPPoE password' }, { name: 'wifiSsid', label: 'WiFi SSID' }, { name: 'wifiPassword', label: 'WiFi password' }]);
+  $('#ping').onclick = async () => { const r = await POST('/api/diagnostics/ping', { onuId: o.id }); modal('Ping ONU WAN', `<pre>${esc(r.output)}</pre>`); };
+  $('#eSpeed').onclick = () => modal('Speed profiles', fields([{ name: 'downloadProfileId', label: 'Download', type: 'select', options: META.speedProfiles.filter(s => s.type === 'download').map(s => ({ value: s.id, label: s.name })) }, { name: 'uploadProfileId', label: 'Upload', type: 'select', options: META.speedProfiles.filter(s => s.type === 'upload').map(s => ({ value: s.id, label: s.name })) }], o), { onSubmit: v => save(v, 'Speed profiles') });
+  $('#eWifi').onclick = () => modal('WiFi settings (pushed by TR-069)', fields([{ name: 'wifiSsid', label: 'SSID' }, { name: 'wifiPassword', label: 'Password' }], o), { onSubmit: v => save(v, 'WiFi') });
   if ($('#pull')) $('#pull').onclick = async () => { try { const r = await POST(`/api/onus/${id}/pull-oneisp`); showCli(r.cli.length ? r.cli : [{ action: 'mode', sn: o.sn, oltName: o.oltName, via: 'web', commands: r.running }], 'PPPoE credentials from OneISP'); toast('Updated from OneISP', 'ok'); router(); } catch (e) { fail(e); } };
-  $('#move').onclick = () => { const olt = META.olts.find(x => x.id === o.oltId); modal('Move ONU to another PON port', fields([{ name: 'board', label: 'Board', type: 'select', options: ponBoards(olt).map(b => ({ value: b.slot, label: b.slot })) }, { name: 'port', label: 'Port', type: 'number' }], o), { onSubmit: async v => { await POST(`/api/onus/${id}/move`, v); toast('Moved', 'ok'); router(); } }); };
+  $('#move').onclick = () => modal('Move ONU to another PON port', fields([{ name: 'board', label: 'Board', type: 'select', options: ponBoards(olt).map(b => ({ value: b.slot, label: b.slot })) }, { name: 'port', label: 'Port', type: 'number' }], o), { onSubmit: async v => { await POST(`/api/onus/${id}/move`, v); toast('Moved', 'ok'); router(); } });
 };
 
 // ================================================= GRAPHS / EVENTS / DIAGNOSTICS / REPORTS

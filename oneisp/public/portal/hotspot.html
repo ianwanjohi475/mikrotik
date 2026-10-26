@@ -2,44 +2,50 @@
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WiFi - Buy package</title><link rel="stylesheet" href="/portal/portal.css"></head>
 <body><div class="box">
 <h1 id="co">WiFi</h1><div class="muted" id="site"></div>
-<div class="tabs"><div class="on" data-t="buy">Buy package</div><div data-t="voucher">Voucher</div></div>
-<div id="buy"><h2>Choose a package</h2><div id="pkgs"></div>
-<input id="phone" placeholder="M-Pesa phone e.g. 0712345678" inputmode="tel">
+<div class="tabs"><div class="on" data-t="buy">Buy package</div><div data-t="code">I have a code</div><div data-t="lost">Lost code</div></div>
+<div id="buy"><h2>1. Choose a package</h2><div id="pkgs"></div>
+<h2>2. Pay with M-Pesa</h2><input id="phone" placeholder="M-Pesa number e.g. 0712345678" inputmode="tel" autocomplete="tel">
 <button id="payBtn">Pay with M-Pesa</button></div>
-<div id="voucher" style="display:none"><h2>Have a voucher?</h2><input id="code" placeholder="Voucher code" style="text-transform:uppercase"><button id="vBtn">Connect</button></div>
+<div id="code" style="display:none"><h2>Enter voucher or WiFi code</h2><input id="codeIn" placeholder="e.g. 8RCYY5" style="text-transform:uppercase" autocomplete="off"><button id="codeBtn">Connect</button></div>
+<div id="lost" style="display:none"><h2>Resend my code</h2><p class="muted">Enter the number you paid with - we send your active code again.</p><input id="lostPhone" placeholder="0712345678" inputmode="tel"><button id="lostBtn">Resend code</button></div>
 <div id="msg"></div>
 <form id="login" method="post" style="display:none"><input type="hidden" name="username"><input type="hidden" name="password"><input type="hidden" name="dst"></form>
-<p class="muted" style="margin-top:16px">Simulator: payment auto-approves after 4 seconds. When opened from a real MikroTik hotspot the page logs you in automatically.</p>
+<p class="muted small" id="note"></p>
 </div>
 <script>
 const q = Object.fromEntries(new URLSearchParams(location.search));
 const $ = s => document.querySelector(s);
-let pick = null, cur = 'KES';
-const msg = (t, c = 'info') => $('#msg').innerHTML = `<div class="msg ${c}">${t}</div>`;
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let pick = null, cfg = {};
+const msg = (t, c = 'info') => ($('#msg').innerHTML = `<div class="msg ${c}">${t}</div>`);
 async function post(u, b) { const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }); const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; }
-function loginRouter(u, p, exp) {
-  msg(`Connected! Username <b>${u}</b> password <b>${p}</b>${exp ? `<br>Valid until ${new Date(exp).toLocaleString()}` : ''}`, 'ok');
-  if (q.login) { const f = $('#login'); f.action = q.login; f.username.value = u; f.password.value = p; f.dst.value = q.dst || 'http://neverssl.com'; setTimeout(() => f.submit(), 1200); }
+function loginRouter(u, p, exp, extra = '') {
+  msg(`<div style="font-size:15px">You're connected!</div><div class="code">${esc(u)}</div>${exp ? `Valid until <b>${new Date(exp).toLocaleString()}</b><br>` : ''}${extra}`, 'ok');
+  // Opened from a MikroTik hotspot: post the code back to the router to log in.
+  if (q.login) { const f = $('#login'); f.action = q.login; f.username.value = u; f.password.value = p; f.dst.value = q.dst || 'http://neverssl.com'; setTimeout(() => f.submit(), 2500); }
 }
 fetch('/api/portal/site/' + (q.site || 1)).then(r => r.json()).then(d => {
-  if (d.error) return msg(d.error, 'bad');
-  cur = d.currency; $('#co').textContent = d.company; $('#site').textContent = d.site.name + ' WiFi';
-  $('#pkgs').innerHTML = d.packages.map(p => `<div class="pkg" data-id="${p.id}"><div><b>${p.name}</b><div class="muted">${p.download} speed &middot; ${p.sharedUsers} device(s)</div></div><b>${cur} ${p.price}</b></div>`).join('');
-  document.querySelectorAll('.pkg').forEach(el => el.onclick = () => { document.querySelectorAll('.pkg').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); pick = el.dataset.id; });
+  if (d.error) return msg(esc(d.error), 'bad');
+  cfg = d;
+  $('#co').textContent = d.company; $('#site').textContent = d.site.name + ' WiFi';
+  $('#note').innerHTML = d.mpesaMode === 'simulate' ? 'Practice mode: payments are simulated and approve after 4 seconds.' : d.mpesaMode === 'sandbox' ? 'M-Pesa sandbox: you get a real PIN prompt but no money moves. Test number 254708374149.' : '';
+  $('#pkgs').innerHTML = d.packages.map(p => `<div class="pkg" data-id="${p.id}"><div><b>${esc(p.name)}</b><div class="muted">${esc(p.download)} &middot; ${p.sharedUsers} device(s)</div></div><b>${esc(d.currency)} ${p.price}</b></div>`).join('');
+  document.querySelectorAll('.pkg').forEach(el => (el.onclick = () => { document.querySelectorAll('.pkg').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); pick = el.dataset.id; }));
 });
-document.querySelectorAll('.tabs div').forEach(t => t.onclick = () => { document.querySelectorAll('.tabs div').forEach(x => x.classList.toggle('on', x === t)); $('#buy').style.display = t.dataset.t === 'buy' ? '' : 'none'; $('#voucher').style.display = t.dataset.t === 'voucher' ? '' : 'none'; });
+document.querySelectorAll('.tabs div').forEach(t => (t.onclick = () => { document.querySelectorAll('.tabs div').forEach(x => x.classList.toggle('on', x === t)); ['buy', 'code', 'lost'].forEach(id => ($('#' + id).style.display = t.dataset.t === id ? '' : 'none')); $('#msg').innerHTML = ''; }));
 $('#payBtn').onclick = async () => {
-  if (!pick) return msg('Pick a package', 'bad');
+  if (!pick) return msg('Choose a package first', 'bad');
   $('#payBtn').disabled = true;
   try {
-    const t = await post('/api/portal/hotspot/pay', { siteId: q.site || 1, packageId: pick, phone: $('#phone').value, mac: q.mac });
-    msg(t.message);
-    const poll = setInterval(async () => {
-      const s = await (await fetch('/api/portal/txn/' + t.id)).json();
-      if (s.status === 'success') { clearInterval(poll); loginRouter(s.username, s.password, s.expiresAt); $('#payBtn').disabled = false; }
-      if (s.status === 'failed') { clearInterval(poll); msg(s.message, 'bad'); $('#payBtn').disabled = false; }
-    }, 1500);
-  } catch (e) { msg(e.message, 'bad'); $('#payBtn').disabled = false; }
+    let t = await post('/api/portal/hotspot/pay', { siteId: q.site || 1, packageId: pick, phone: $('#phone').value, mac: q.mac, ip: q.ip });
+    msg(`<b>Check your phone</b> and enter your M-Pesa PIN.<br><span class="muted">${esc(t.message)}</span><div class="spin"></div>`);
+    for (let i = 0; i < 70 && t.status === 'pending'; i++) { await new Promise(r => setTimeout(r, 3000)); t = await (await fetch('/api/portal/txn/' + t.id)).json(); }
+    if (t.status === 'success') loginRouter(t.result.username, t.result.password, t.result.expiresAt, `Code also sent by ${esc(t.result.sentVia)} to ${esc(t.phone)}.`);
+    else if (t.status === 'pending') msg('Still waiting for M-Pesa. If you paid, use "Lost code" in a minute.', 'bad');
+    else msg(esc(t.message || 'Payment failed'), 'bad');
+  } catch (e) { msg(esc(e.message), 'bad'); }
+  $('#payBtn').disabled = false;
 };
-$('#vBtn').onclick = async () => { try { const r = await post('/api/portal/voucher', { code: $('#code').value, mac: q.mac }); loginRouter(r.username, r.password, r.expiresAt); } catch (e) { msg(e.message, 'bad'); } };
+$('#codeBtn').onclick = async () => { try { const r = await post('/api/portal/voucher', { code: $('#codeIn').value, mac: q.mac }); loginRouter(r.username, r.password, r.expiresAt); } catch (e) { msg(esc(e.message), 'bad'); } };
+$('#lostBtn').onclick = async () => { try { const r = await post('/api/portal/hotspot/resend', { siteId: q.site || 1, phone: $('#lostPhone').value }); msg(esc(r.message), 'ok'); } catch (e) { msg(esc(e.message), 'bad'); } };
 </script></body></html>

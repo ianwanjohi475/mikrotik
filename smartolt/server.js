@@ -55,6 +55,7 @@ function decorate(o, full = false) {
     ...o, status: statusOf(o), signal: signalLevel(o), oltName: olt?.name, vendor: olt?.vendor, onuTypeName: type?.name || '-',
     zoneName: db.get('zones', o.zoneId)?.name || '-', odbName: db.get('odbs', o.odbId)?.name || '-', uptime: fmtUptime(o),
     downloadName: db.get('speedProfiles', o.downloadProfileId)?.name || '-', uploadName: db.get('speedProfiles', o.uploadProfileId)?.name || '-',
+    portName: olt?.portNames?.[`${o.board}/${o.port}`] || '', distanceKm: (o.distance / 1000).toFixed(2),
     pon: olt?.vendor === 'ZTE' ? `gpon-onu_1/${o.board}/${o.port}:${o.onuId}` : `0/${o.board}/${o.port}:${o.onuId}`,
   };
   if (!full) delete out.history;
@@ -66,14 +67,14 @@ function event(type, severity, message, extra = {}) {
 }
 function commandsFor(o, action) {
   const olt = db.get('olts', o.oltId);
-  return oltCommands(action, { olt, onu: o, type: db.get('onuTypes', o.onuTypeId), down: db.get('speedProfiles', o.downloadProfileId), up: db.get('speedProfiles', o.uploadProfileId) });
+  return oltCommands(action, { olt, acs: settings().tr069Url, onu: o, type: db.get('onuTypes', o.onuTypeId), down: db.get('speedProfiles', o.downloadProfileId), up: db.get('speedProfiles', o.uploadProfileId) });
 }
 function logCli(o, action, commands, via = 'web') {
   const olt = db.get('olts', o.oltId);
   return db.insert('cliLog', { oltId: o.oltId, oltName: olt?.name, onuId: o.id, sn: o.sn, action, via, commands });
 }
-function nextServicePort(oltId) {
-  const used = new Set(db.find('onus', o => o.oltId === oltId).map(o => o.servicePort));
+function nextServicePort(oltId, extra = []) {
+  const used = new Set([...db.find('onus', o => o.oltId === oltId).flatMap(o => [o.servicePort, o.mgmtServicePort]), ...extra]);
   let i = 100; while (used.has(i)) i++; return i;
 }
 function nextOnuId(oltId, board, port) {
@@ -87,6 +88,22 @@ const findOnu = key => {
   if (!o) throw new HttpError(404, 'ONU not found');
   return o;
 };
+
+// Fields added in later versions get sensible defaults (also used for new ONUs).
+const SW = { HG8546M: ['V5R019C10S115', '10C7.A'], EG8145V5: ['V5R020C00S060', '27C7.A'], HG8010H: ['V5R019C00S050', '10D2.A'], HG8247H: ['V3R017C10S206', '3A3.A'], 'ZTE-F660': ['V8.0.10P1N2', 'V6.0'], 'ZTE-F601': ['V6.0.10P3N4', 'V6.0'], 'ZTE-F670L': ['V9.0.11P1N6', 'V9.0'] };
+function ensureOnuDefaults(o) {
+  const d = { tr069Profile: 'SmartOLT', mgmtMode: 'dhcp', mgmtVlan: 69, mgmtRemote: false, mgmtIp: '', configMethod: 'omci', ipProtocol: 'ipv4', pppoePlus: false, wanRemoteAccess: false, sector: '', preset: '' };
+  for (const [k, v] of Object.entries(d)) if (o[k] === undefined) o[k] = v;
+  if (o.mgmtServicePort === undefined) o.mgmtServicePort = nextServicePort(o.oltId, [o.servicePort]);
+  const t = db.get('onuTypes', o.onuTypeId);
+  if (!o.swVersion) [o.swVersion, o.hwVersion] = SW[t?.name] || ['V1.0', '1.0'];
+  return o;
+}
+function disconnections(o) {
+  const ev = db.find('events', e => e.onuSn === o.sn && ['los', 'power_fail', 'offline', 'reboot'].includes(e.type));
+  const since = ms => ev.filter(e => Date.now() - new Date(e.createdAt) < ms).length;
+  return { day: since(864e5), week: since(7 * 864e5) };
+}
 
 // ---------------------------------------------------------------- OneISP integration
 async function oneisp(pathname, opts = {}) {
@@ -150,7 +167,10 @@ function authorize(input, via = 'web') {
     temperature: rnd(40, 50), distance: Math.round(rnd(150, 6000)), uptimeStart: iso(Date.now()), lastDownCause: '-', lastDownAt: null,
     servicePort: nextServicePort(olt.id), externalId: input.externalId ? Number(input.externalId) : null, authorizedAt: iso(Date.now()), via,
     trafficDown: 0, trafficUp: 0, history: { sig: [], traf: [] },
+    tr069Profile: input.tr069Profile || 'SmartOLT', mgmtMode: input.mgmtMode || 'dhcp', mgmtVlan: Number(input.mgmtVlan || 69), configMethod: input.configMethod || 'omci',
+    ipProtocol: input.ipProtocol || 'ipv4', pppoePlus: input.pppoePlus === true || input.pppoePlus === 'true', wanRemoteAccess: input.wanRemoteAccess === true || input.wanRemoteAccess === 'true',
   });
+  ensureOnuDefaults(o);
   if (pending) db.remove('unconfigured', pending.id);
   const cmds = via === 'cli' ? [`ont add ${port} ${onuId} sn-auth "${sn}" ... (typed in OLT CLI)`] : commandsFor(o, 'authorize');
   logCli(o, 'authorize', cmds, via);
@@ -194,11 +214,18 @@ function onuAction(o, action, via = 'web') {
   return logCli(o, action, cmds, via);
 }
 
-const EDITABLE = ['name', 'address', 'phone', 'zoneId', 'odbId', 'odbPort', 'onuTypeId', 'mode', 'vlan', 'wanMode', 'pppoeUser', 'pppoePass', 'staticIp', 'downloadProfileId', 'uploadProfileId', 'catv', 'wifiSsid', 'wifiPassword', 'externalId', 'servicePort', 'comment'];
+const EDITABLE = ['name', 'address', 'phone', 'zoneId', 'odbId', 'odbPort', 'onuTypeId', 'mode', 'vlan', 'wanMode', 'pppoeUser', 'pppoePass', 'staticIp', 'staticMask', 'staticGateway', 'downloadProfileId', 'uploadProfileId', 'catv', 'wifiSsid', 'wifiPassword', 'externalId', 'servicePort', 'comment',
+  'tr069Profile', 'mgmtMode', 'mgmtVlan', 'mgmtIp', 'mgmtRemote', 'configMethod', 'ipProtocol', 'pppoePlus', 'wanRemoteAccess', 'sector', 'preset'];
+const BOOLS = ['catv', 'mgmtRemote', 'pppoePlus', 'wanRemoteAccess'];
 function updateOnu(o, patch, via = 'web') {
   const p = Object.fromEntries(Object.entries(patch).filter(([k]) => EDITABLE.includes(k)));
   for (const k of ['zoneId', 'odbId', 'onuTypeId', 'vlan', 'downloadProfileId', 'uploadProfileId', 'externalId']) if (p[k] !== undefined) p[k] = p[k] === '' || p[k] === null ? null : Number(p[k]);
-  if (p.catv !== undefined) p.catv = p.catv === true || p.catv === 'true';
+  for (const k of BOOLS) if (p[k] !== undefined) p[k] = p[k] === true || p[k] === 'true';
+  if (p.mgmtVlan !== undefined) p.mgmtVlan = Number(p.mgmtVlan);
+  const next = { ...o, ...p };
+  if (next.mode === 'routing' && next.wanMode === 'pppoe' && next.configMethod !== 'tr069' && !next.pppoeUser) throw new HttpError(400, 'PPPoE needs a username');
+  if (next.mode === 'routing' && next.wanMode === 'static' && !next.staticIp) throw new HttpError(400, 'Static WAN needs an IP address');
+  if (next.mgmtMode === 'static' && !next.mgmtIp) throw new HttpError(400, 'Static Mgmt IP needs an address');
   const before = { ...o };
   if (p.mode && p.mode !== o.mode) {
     const type = db.get('onuTypes', p.onuTypeId || o.onuTypeId);
@@ -208,7 +235,8 @@ function updateOnu(o, patch, via = 'web') {
   const changed = k => p[k] !== undefined && String(p[k]) !== String(before[k]);
   const actions = [];
   if (changed('vlan')) actions.push('vlan');
-  else if (changed('mode') || changed('wanMode') || changed('pppoeUser') || changed('pppoePass') || changed('staticIp')) actions.push('mode');
+  else if (['mode', 'wanMode', 'pppoeUser', 'pppoePass', 'staticIp', 'configMethod', 'ipProtocol', 'pppoePlus', 'wanRemoteAccess'].some(changed)) actions.push('mode');
+  if (['tr069Profile', 'mgmtMode', 'mgmtVlan', 'mgmtIp', 'mgmtRemote'].some(changed)) { if (o.mgmtMode === 'dhcp') o.mgmtIp = ''; actions.push('mgmt'); }
   if (changed('downloadProfileId') || changed('uploadProfileId')) actions.push('speed');
   if (changed('name')) actions.push('rename');
   if (changed('wifiSsid') || changed('wifiPassword')) actions.push('wifi');
@@ -275,11 +303,47 @@ app.get('/api/onus', req => {
 });
 app.get('/api/onus/:id', req => {
   const o = findOnu(req.params.id);
-  return { onu: decorate(o, true), events: db.find('events', e => e.onuSn === o.sn).slice(-30).reverse(), cli: db.find('cliLog', l => l.sn === o.sn).slice(-20).reverse(), running: commandsFor(o, 'authorize') };
+  return { onu: decorate(o, true), disconnections: disconnections(o), events: db.find('events', e => e.onuSn === o.sn).slice(-30).reverse(), cli: db.find('cliLog', l => l.sn === o.sn).slice(-20).reverse(), running: commandsFor(o, 'authorize') };
 });
 app.post('/api/onus/authorize', req => decorate(authorize(req.body, req.apiClient ? 'api' : 'web')));
 app.put('/api/onus/:id', req => { const o = findOnu(req.params.id); const logs = updateOnu(o, req.body, req.apiClient ? 'api' : 'web'); return { onu: decorate(o), cli: logs }; });
 app.post('/api/onus/:id/pull-oneisp', async req => { const o = findOnu(req.params.id); await pullFromOneIsp(o); const logs = updateOnu(o, { pppoeUser: o.pppoeUser }); return { onu: decorate(o), cli: logs, running: commandsFor(o, 'mode') }; });
+// Simulated TR-069 ACS view of the ONU (what SmartOLT reads/writes via CWMP)
+app.get('/api/onus/:id/tr069', req => {
+  const o = findOnu(req.params.id);
+  const t = db.get('onuTypes', o.onuTypeId);
+  if (o.tr069Profile === 'Disabled' || o.mgmtMode === 'inactive') throw new HttpError(400, 'TR-069 is disabled for this ONU (set a TR069 profile and Mgmt IP)');
+  if (o.status !== 'online') throw new HttpError(400, 'ONU is offline - the ACS cannot reach it');
+  const P = 'InternetGatewayDevice.';
+  return { lastInform: o.tr069LastInform, params: {
+    [P + 'DeviceInfo.Manufacturer']: t?.vendor === 'ZTE' ? 'ZTE' : 'Huawei Technologies Co., Ltd', [P + 'DeviceInfo.ModelName']: t?.name, [P + 'DeviceInfo.SerialNumber']: o.sn,
+    [P + 'DeviceInfo.SoftwareVersion']: o.swVersion, [P + 'DeviceInfo.HardwareVersion']: o.hwVersion, [P + 'DeviceInfo.UpTime']: Math.floor((Date.now() - new Date(o.uptimeStart)) / 1000),
+    [P + 'ManagementServer.URL']: settings().tr069Url, [P + 'ManagementServer.PeriodicInformInterval']: 300, [P + 'ManagementServer.ConnectionRequestURL']: `http://${o.mgmtIp}:7547/`,
+    [P + `WANDevice.1.WANConnectionDevice.1.${o.wanMode === 'pppoe' ? 'WANPPPConnection' : 'WANIPConnection'}.1.ConnectionStatus`]: o.mode === 'routing' ? 'Connected' : 'Bridged',
+    [P + 'WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username']: o.mode === 'routing' && o.wanMode === 'pppoe' ? o.pppoeUser : '',
+    [P + 'WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.ExternalIPAddress']: o.wanIp || '',
+    [P + 'LANDevice.1.WLANConfiguration.1.SSID']: t?.wifi ? o.wifiSsid : 'n/a', [P + 'LANDevice.1.WLANConfiguration.1.TotalAssociations']: o.wifiClients ?? 0,
+    [P + 'LANDevice.1.LANHostConfigManagement.IPInterface.1.IPInterfaceIPAddress']: '192.168.100.1',
+  } };
+});
+app.post('/api/onus/:id/tr069', req => {
+  const o = findOnu(req.params.id);
+  const a = req.body.action;
+  if (a === 'factory_reset') { Object.assign(o, { status: 'offline', lastDownCause: 'factory reset (TR-069)', lastDownAt: iso(Date.now()), rebootUntil: Date.now() + 60000 }); event('reboot', 'warning', `ONU ${o.sn} factory reset via TR-069 - config will be re-pushed when it informs`, { oltId: o.oltId, onuSn: o.sn }); }
+  else if (a === 'reboot') { if (o.status !== 'online') throw new HttpError(400, 'ONU offline'); Object.assign(o, { status: 'offline', lastDownCause: 'reboot (TR-069)', lastDownAt: iso(Date.now()), rebootUntil: Date.now() + 45000 }); event('reboot', 'info', `ONU ${o.sn} rebooted via TR-069`, { oltId: o.oltId, onuSn: o.sn }); }
+  else if (a === 'refresh') o.tr069LastInform = iso(Date.now());
+  else throw new HttpError(400, 'Unknown TR-069 action');
+  db.save();
+  return { ok: true, cli: logCli(o, `tr069-${a}`, [`# CWMP ${a === 'refresh' ? 'GetParameterValues' : a === 'reboot' ? 'Reboot' : 'FactoryReset'} RPC sent by ACS ${settings().tr069Url} to ${o.mgmtIp || 'ONU'}`]) };
+});
+app.put('/api/olts/:id/ports/:board/:port', req => {
+  const olt = db.get('olts', req.params.id);
+  if (!olt) throw new HttpError(404, 'OLT not found');
+  olt.portNames = olt.portNames || {};
+  olt.portNames[`${req.params.board}/${req.params.port}`] = String(req.body.name || '').slice(0, 60);
+  db.save();
+  return { ok: true, cli: [`interface gpon 0/${req.params.board}`, `port desc ${req.params.port} description "${req.body.name}"`, 'quit'] };
+});
 app.post('/api/onus/:id/move', req => {
   const o = findOnu(req.params.id);
   const board = Number(req.body.board), port = Number(req.body.port);
@@ -504,6 +568,9 @@ function tick() {
       o.txPower = 2.2 + (Math.random() - 0.5) * 0.2;
       o.temperature = Math.min(75, Math.max(30, o.temperature + (Math.random() - 0.5)));
       if (!o.wanIp && o.mode === 'routing') o.wanIp = `10.10.${(o.id >> 8) & 255}.${(o.id % 250) + 2}`;
+      if (o.mgmtMode === 'dhcp' && o.tr069Profile !== 'Disabled' && !o.mgmtIp) o.mgmtIp = `10.67.${31 + o.oltId}.${(o.id % 250) + 2}`;
+      if (o.tr069Profile !== 'Disabled' && o.mgmtMode !== 'inactive' && (!o.tr069LastInform || now - new Date(o.tr069LastInform) > 300000)) o.tr069LastInform = iso(now);
+      if (db.get('onuTypes', o.onuTypeId)?.wifi) { o.wifiClients = Math.max(0, Math.min(12, (o.wifiClients ?? 2) + Math.round((Math.random() - 0.5) * 1.2))); o.wifiAvg = Math.round(-45 - Math.random() * 20); }
       const maxDown = (db.get('speedProfiles', o.downloadProfileId)?.speed || 10240), maxUp = (db.get('speedProfiles', o.uploadProfileId)?.speed || 5120);
       const hour = new Date().getHours();
       const load = hour >= 19 && hour <= 23 ? 0.65 : hour >= 1 && hour <= 6 ? 0.08 : 0.3;
@@ -555,6 +622,8 @@ function backfill() {
 
 // data created before OneISP moved from port 3000 to 8080
 if (settings().oneisp?.url === 'http://localhost:3000') { settings().oneisp.url = 'http://localhost:8080'; db.save(); }
+db.col('onus').forEach(ensureOnuDefaults);
+db.save();
 backfill();
 setInterval(tick, 10000);
 setTimeout(() => syncAllFromOneIsp().then(n => n && console.log(`Pulled ${n} PPPoE credential(s) from OneISP`)), 3000);

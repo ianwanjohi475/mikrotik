@@ -169,11 +169,24 @@ function setBanner(me) {
   if (me.whatsappProvider === 'link') warn.push('WhatsApp is click-to-send - open <a href="#/sms">SMS &amp; WhatsApp</a> and press "Send in WhatsApp" on new messages');
   $('#modeBanner').innerHTML = warn.length ? `<div class="banner">&#9888; ${warn.join(' &middot; ')}. <a href="#/settings">Open Settings</a> &middot; <a href="#/mpesa">M-Pesa &rarr; Diagnose</a></div>` : '';
 }
+// First-run wizard: paste the Daraja keys once, switch to sandbox, check them with Safaricom.
+function mpesaWizard() {
+  const m = modal('Connect M-Pesa (Daraja sandbox)', `<div class="lesson small">Paste the <b>Consumer Key</b> and <b>Consumer Secret</b> of your app from <a href="https://developer.safaricom.co.ke" target="_blank">developer.safaricom.co.ke</a> &rarr; My Apps. Shortcode 174379 and the sandbox passkey are already set. The keys are saved only on this PC (data/oneisp.db), never uploaded.</div>` +
+    fields([{ name: 'consumerKey', label: 'Consumer Key', required: true, full: true }, { name: 'consumerSecret', label: 'Consumer Secret', required: true, full: true }]) + '<div id="wzr"></div>', {
+    submit: 'Save & connect', onSubmit: async v => {
+      await PUT('/api/settings', { mpesa: { mode: 'sandbox', consumerKey: v.consumerKey, consumerSecret: v.consumerSecret } });
+      setBanner(await GET('/api/auth/me'));
+      try { const r = await POST('/api/mpesa/test'); toast(esc(r.message), 'ok'); return true; }
+      catch (e) { $('#wzr', m.el).innerHTML = `<div class="lesson" style="color:var(--bad)">Saved, but Safaricom said: ${esc(e.message)}</div>`; return false; }
+    },
+  });
+}
 async function boot() {
   try {
     const me = await api('GET', '/api/auth/me');
     ME = me.user; CUR = me.currency;
     setBanner(me);
+    if (!me.mpesaKeys && me.user.role === 'admin') setTimeout(mpesaWizard, 600);
     $('#userName').textContent = ME.name || ME.username;
     $('#login').classList.add('hidden');
     $('#shell').classList.remove('hidden');

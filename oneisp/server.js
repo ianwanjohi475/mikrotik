@@ -82,7 +82,7 @@ app.get('/api/auth/me', req => {
   const u = db.get('users', sessions.get(req.cookies.oisid));
   if (!u) throw new HttpError(401, 'Login required');
   const st = settings();
-  return { user: safeUser(u), company: st.companyName, currency: st.currency, mpesaMode: st.mpesa.mode, smsProvider: st.messaging.sms.provider, whatsappProvider: st.messaging.whatsapp.provider };
+  return { user: safeUser(u), company: st.companyName, currency: st.currency, mpesaMode: st.mpesa.mode, mpesaKeys: !!(st.mpesa.consumerKey && st.mpesa.consumerSecret), smsProvider: st.messaging.sms.provider, whatsappProvider: st.messaging.whatsapp.provider };
 });
 
 // ---------------------------------------------------------------- router plumbing

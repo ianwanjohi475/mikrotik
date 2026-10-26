@@ -471,6 +471,8 @@ for (const name of Object.keys(COLLECTIONS)) {
     return { ok: true };
   });
 }
+app.get('/api/sql/schema', () => ({ engine: db.sql ? 'SQLite ' + (db.db.prepare('select sqlite_version() v').get().v) : 'JSON file', file: db.file, objects: db.schema() }));
+app.post('/api/sql', req => { try { return db.query(req.body.query); } catch (e) { throw new HttpError(400, e.message); } });
 app.get('/api/settings', () => settings());
 app.put('/api/settings', req => {
   const s = settings(), b = req.body;
@@ -484,7 +486,7 @@ app.put('/api/settings', req => {
 });
 app.post('/api/settings/oneisp/test', async () => ({ ok: true, customers: (await oneisp('/api/v1/customers')).length }));
 app.post('/api/settings/oneisp/sync', async () => ({ ok: true, updated: await syncAllFromOneIsp() }));
-app.post('/api/settings/reset', () => { const fresh = new Store(db.file + '.reset', seed.seed); db.data = fresh.data; db.flush(); require('fs').unlinkSync(fresh.file); return { ok: true }; });
+app.post('/api/settings/reset', () => { db.reset(seed.seed); return { ok: true }; });
 
 // ---------------------------------------------------------------- SmartOLT-compatible public API (X-Token)
 const apiOnu = o => {

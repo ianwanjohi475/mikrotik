@@ -28,7 +28,7 @@ fetch('/api/portal/site/' + (q.site || 1)).then(r => r.json()).then(d => {
   if (d.error) return msg(esc(d.error), 'bad');
   cfg = d;
   $('#co').textContent = d.company; $('#site').textContent = d.site.name + ' WiFi';
-  $('#note').innerHTML = d.mpesaMode === 'simulate' ? 'Practice mode: payments are simulated and approve after 4 seconds.' : d.mpesaMode === 'sandbox' ? 'M-Pesa sandbox: you get a real PIN prompt but no money moves. Test number 254708374149.' : '';
+  $('#note').innerHTML = d.mpesaMode === 'simulate' ? '<div class="msg bad">PRACTICE MODE: no PIN prompt is sent - payment is faked after 4 seconds. Switch OneISP Settings &gt; M-Pesa to "Daraja sandbox" for real prompts.</div>' : d.mpesaMode === 'sandbox' ? 'M-Pesa sandbox: use your own Safaricom number - you get a real PIN prompt, no money moves.' : '';
   $('#pkgs').innerHTML = d.packages.map(p => `<div class="pkg" data-id="${p.id}"><div><b>${esc(p.name)}</b><div class="muted">${esc(p.download)} &middot; ${p.sharedUsers} device(s)</div></div><b>${esc(d.currency)} ${p.price}</b></div>`).join('');
   document.querySelectorAll('.pkg').forEach(el => (el.onclick = () => { document.querySelectorAll('.pkg').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); pick = el.dataset.id; }));
 });

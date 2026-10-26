@@ -19,7 +19,7 @@ Every change OneISP makes to a router is shown as the **exact RouterOS command**
 
 ## Requirements
 
-- **Node.js 18 or newer** (https://nodejs.org, LTS version). You don't need to install anything else: there are **no npm packages**.
+- **Node.js 22.13 or newer** (https://nodejs.org, the LTS version). That's the only thing to install: there are **no npm packages**. On older Node.js versions the apps still run, but store data in JSON files instead of SQLite.
 - Optional: your MikroTik CHR (RouterOS v7) for live mode.
 
 ## Start
@@ -30,10 +30,14 @@ Windows: double-click **`start-windows.bat`**. Or from a terminal in this folder
 npm start            # both apps
 npm run oneisp       # only OneISP  (port 8080)
 npm run smartolt     # only SmartOLT (port 4000)
-npm run reset        # delete data/ -> demo data is re-created next start
+npm run reset        # delete data/ (the .db files) -> demo data is re-created next start
 ```
 
-Data is kept in `data/oneisp.json` and `data/smartolt.json`. Both apps start with demo data: 16 customers, 20 ONUs, 2 OLTs, payment history, tickets and leads.
+Data is kept in **SQLite databases**: `data/oneisp.db` and `data/smartolt.db`, using Node's built-in SQLite.
+
+- Every collection is a real SQL table (`customers`, `payments`, `mpesa`, `onus`, `events`…), and there is a `v_<table>` view with one column per field.
+- Use the **SQL Console** page in each app (read-only) or open the `.db` file in *DB Browser for SQLite*.
+- Data from an older version (`data/*.json`) is imported automatically the first time you start. Both apps start with demo data: 16 customers, 20 ONUs, 2 OLTs, payment history, tickets and leads.
 
 To change the ports, set `ONEISP_PORT` or `SMARTOLT_PORT`. If you change the OneISP port, also update OneISP's URL in SmartOLT → Settings.
 

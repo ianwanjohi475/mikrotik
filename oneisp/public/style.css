@@ -55,3 +55,5 @@ pre,.code{background:#141625;color:#b9f6ca;border-radius:6px;padding:14px;overfl
 @media(max-width:760px){.sidebar{position:fixed;left:-280px;z-index:40;transition:left .2s}.sidebar.open{left:0}.mobile-only{display:inline}.main{padding:12px}.g4,.g2,.filters,.fgrid{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}
 .p-unmatched,.p-cancelled{background:rgba(255,159,67,.18);color:var(--warn)}.p-processing,.p-sending{background:rgba(0,207,232,.15);color:var(--info)}
 .p-whatsapp{background:rgba(37,211,102,.18);color:#25d366}.p-sms{background:rgba(115,103,240,.2);color:var(--accent2)}
+.banner{background:rgba(255,159,67,.15);border:1px solid var(--warn);color:var(--warn);padding:12px 18px;border-radius:8px;margin:-8px 0 20px}.banner a{color:var(--warn);text-decoration:underline}
+.sqlgrid{grid-template-columns:280px 1fr;align-items:start}.sqlside{max-height:80vh;overflow:auto}.sqlside h4{margin:14px 0 6px}.sqlside summary{cursor:pointer;padding:3px 0}.sqlex{margin:10px 0;gap:6px}@media(max-width:900px){.sqlgrid{grid-template-columns:1fr}}

@@ -6,6 +6,17 @@ All keys are entered in **OneISP → Settings**. They are saved in `data/oneisp.
 
 ---
 
+## 0. Checklist: "no prompt / no code" (read this first)
+
+| Check | Why |
+|---|---|
+| **Settings → M-Pesa → Mode = `Daraja sandbox`**, then **Save** | In *simulate* mode **nothing** is sent to Safaricom. An orange banner at the top of OneISP warns you while this is the case |
+| Pay with **your own Safaricom number** (07…) | The test number **254708374149 never rings**. A real line gets the real sandbox PIN prompt, and no money moves |
+| **M-Pesa → Diagnose** with your number | Checks the mode, keys, passkey, connection and OAuth, then sends a real push. Each ✗ tells you what to fix |
+| A **WhatsApp/SMS provider** chosen in Settings → Messaging | With provider *simulate* the code is **not sent**. The outbox says "not sent" |
+| Watch the **black OneISP window** | Every Safaricom call is printed as `[M-Pesa] POST /mpesa/stkpush/... -> 200 {...}` |
+| Click **Details** on a transaction | Shows the exact request OneISP sent and Safaricom's reply |
+
 ## 1. M-Pesa (Safaricom Daraja sandbox)
 
 1. Log in at https://developer.safaricom.co.ke → **My Apps** and create an app (or use your existing one) with *Lipa Na M-Pesa Sandbox* and *M-Pesa Sandbox* enabled.
@@ -23,7 +34,7 @@ All keys are entered in **OneISP → Settings**. They are saved in `data/oneisp.
 | Method | Needs | How it works |
 |---|---|---|
 | **Polling** (default) | Nothing | Every few seconds OneISP calls `/mpesa/stkpushquery/v1/query` until the result is known. This works on your PC with no public URL |
-| **Callback** | A public **https** URL | Safaricom POSTs the result to `<Public base URL>/api/portal/mpesa/callback`. It includes the **real receipt number** (e.g. `TJQ1ABC2DE`) |
+| **Callback** | A public **https** URL | Safaricom POSTs the result to `<Public base URL>/api/portal/pay/stk-result`. It includes the **real receipt number** (e.g. `TJQ1ABC2DE`) |
 
 With polling only, the receipt is saved as `STK…` because the query API doesn't return the receipt number. Add a public URL and the real receipt replaces it automatically.
 
@@ -41,7 +52,7 @@ It prints a URL like `https://random-words.trycloudflare.com`. Paste it into **S
 1. Set the public base URL (above). Set the C2B shortcode to `600982` (sandbox).
 2. Go to **M-Pesa → Register C2B URLs**. This tells Safaricom where to send confirmations.
 3. Go to **M-Pesa → Simulate paybill payment** with BillRefNumber = a customer account number (e.g. `LN1001`).
-4. Safaricom POSTs to `/api/portal/mpesa/c2b/confirmation` and that account is renewed. An unknown account number shows up as **unmatched**; click **Allocate** to assign it to a customer.
+4. Safaricom POSTs to `/api/portal/pay/c2b-confirm` and that account is renewed. An unknown account number shows up as **unmatched**; click **Allocate** to assign it to a customer.
 
 In *simulate* mode the C2B button posts the same kind of confirmation that Safaricom would send, so you can practice without internet.
 
@@ -124,6 +135,7 @@ If the same number buys again, it keeps the same code. The time is added on, and
 |---|---|
 | `Invalid Authentication passed` | Wrong consumer key or secret, or the app doesn't have the sandbox products enabled |
 | `Bad Request - Invalid PhoneNumber` | Use 2547XXXXXXXX or 07XXXXXXXX |
+| `Bad Request - Invalid CallBackURL` | The Public base URL must be https and must not contain words like *mpesa*, *safaricom*, *exe*, *cmd*, *sql* or *query*. OneISP refuses such URLs when you save |
 | STK sent but nothing on your phone | Use a Safaricom line. The sandbox is sometimes slow, so wait 30–60s. The test number 254708374149 never shows a prompt |
 | Stays *pending* for 3 minutes, then *failed: timeout* | The customer didn't answer, or the sandbox was busy. Click *Check now* on the row |
 | WhatsApp `failed: ... 131047` (Meta) | Outside the 24h window. Use a template |

@@ -128,7 +128,7 @@ const NAV = [
   ['CRM', [['customers', '&#9786;', 'Customers'], ['leads', '&#9734;', 'Leads'], ['tickets', '&#9873;', 'Tickets']]],
   ['Revenue', [['payments', '&#36;', 'Payments'], ['mpesa', '&#9742;', 'M-Pesa'], ['expenses', '&#8595;', 'Expenses']]],
   ['Communication', [['sms', '&#9993;', 'SMS & WhatsApp']]],
-  ['System', [['logs', '&#9000;', 'Router Logs'], ['users', '&#9787;', 'Users'], ['settings', '&#9881;', 'Settings'], ['learn', '&#9733;', 'Learn / Lab guide']]],
+  ['System', [['logs', '&#9000;', 'Router Logs'], ['sql', '&#8862;', 'SQL Console'], ['users', '&#9787;', 'Users'], ['settings', '&#9881;', 'Settings'], ['learn', '&#9733;', 'Learn / Lab guide']]],
   ['Portals', [['portal-hotspot', '&#8599;', 'Hotspot portal'], ['portal-account', '&#8599;', 'Customer portal']]],
 ];
 function renderNav(active) {
@@ -163,10 +163,17 @@ $('#menuBtn').onclick = () => $('#sidebar').classList.toggle('open');
 $('#themeBtn').onclick = () => { document.documentElement.classList.toggle('light'); localStorage.theme = document.documentElement.classList.contains('light') ? 'light' : 'dark'; };
 if (localStorage.theme === 'light') document.documentElement.classList.add('light');
 
+function setBanner(me) {
+  const warn = [];
+  if (me.mpesaMode === 'simulate') warn.push('M-Pesa is in <b>SIMULATE</b> mode - no real PIN prompts are sent');
+  if (me.whatsappProvider === 'simulate' && me.smsProvider === 'simulate') warn.push('SMS and WhatsApp providers are <b>simulate</b> - no codes or messages leave this PC');
+  $('#modeBanner').innerHTML = warn.length ? `<div class="banner">&#9888; ${warn.join(' &middot; ')}. <a href="#/settings">Open Settings</a> &middot; <a href="#/mpesa">M-Pesa &rarr; Diagnose</a></div>` : '';
+}
 async function boot() {
   try {
     const me = await api('GET', '/api/auth/me');
     ME = me.user; CUR = me.currency;
+    setBanner(me);
     $('#userName').textContent = ME.name || ME.username;
     $('#login').classList.add('hidden');
     $('#shell').classList.remove('hidden');
@@ -524,12 +531,12 @@ routes['customers/:id'] = async (page, id) => {
   };
   $('#more').onchange = e => { const a = e.target.value; e.target.value = ''; if (more[a]) more[a](); };
 };
-const msgStatus = s => { s = String(s || ''); return s.startsWith('failed') ? `<span class="pill p-failed" title="${esc(s)}">failed</span><div class="small" style="color:var(--bad)">${esc(s.slice(8))}</div>` : s === 'sending' ? pill('pending') : `<span class="pill p-ok">${esc(s.split(' (')[0])}</span>`; };
+const msgStatus = s => { s = String(s || ''); if (s.startsWith('NOT SENT')) return `<span class="pill p-unmatched">not sent</span><div class="small" style="color:var(--warn)">${esc(s.slice(11))}</div>`; return s.startsWith('failed') ? `<span class="pill p-failed" title="${esc(s)}">failed</span><div class="small" style="color:var(--bad)">${esc(s.slice(8))}</div>` : s === 'sending' ? pill('pending') : `<span class="pill p-ok">${esc(s.split(' (')[0])}</span>`; };
 function mpesaTable(list) {
   return table([{ label: 'Date', render: r => dt(r.createdAt) }, { label: 'Type', render: r => `${r.kind === 'c2b' ? 'Paybill (C2B)' : 'STK push'}<div class="small muted">${esc(r.purpose)} &middot; ${esc(r.mode)}</div>` },
     { label: 'Phone', render: r => `<span class="mono">${esc(r.phone)}</span>${r.payer ? `<div class="small muted">${esc(r.payer)}</div>` : ''}` }, { label: 'Amount', render: r => `<b>${money(r.amount)}</b>` }, { label: 'Account ref', render: r => esc(r.reference || '-') },
     { label: 'Receipt', render: r => `<span class="mono">${esc(r.receipt || '-')}</span>` }, { label: 'Status', render: r => pill(r.status) }, { label: 'Message', render: r => `<span class="small">${esc(r.message || '')}</span>${r.lastError ? `<div class="small" style="color:var(--bad)">${esc(r.lastError)}</div>` : ''}` },
-    { label: '', render: r => r.status === 'unmatched' ? `<button class="btn sm ok" data-alloc="${r.id}">Allocate</button>` : r.status === 'pending' && r.mode !== 'simulate' ? `<button class="btn sm" data-recheck="${r.id}">Check now</button>` : '' }], list, { empty: 'No M-Pesa transactions yet' });
+    { label: '', render: r => `<button class="btn sm" data-det="${r.id}">Details</button> ` + (r.status === 'unmatched' ? `<button class="btn sm ok" data-alloc="${r.id}">Allocate</button>` : r.status === 'pending' && r.mode !== 'simulate' ? `<button class="btn sm" data-recheck="${r.id}">Check now</button>` : '') }], list, { empty: 'No M-Pesa transactions yet' });
 }
 
 // ============================================================ M-PESA
@@ -537,15 +544,27 @@ routes.mpesa = async page => {
   const [list, s] = await Promise.all([GET('/api/mpesa'), GET('/api/settings')]);
   const mode = s.mpesa.mode;
   page.innerHTML = `<div class="card"><div class="toolbar"><div><h2>M-Pesa transactions ${pill(mode === 'simulate' ? 'simulate' : 'live')} <span class="muted small">${esc(mode)}</span></h2></div>
-    <div class="actions"><button class="btn" id="test">Test connection</button><button class="btn ok" id="stk">Test STK push</button><button class="btn" id="c2b">Simulate paybill payment</button><button class="btn" id="reg">Register C2B URLs</button><button class="btn" id="cbs">Callback log</button><a class="btn" href="#/settings">Settings</a></div></div>
+    <div class="actions"><button class="btn warn" id="diag">Diagnose</button><button class="btn" id="test">Test connection</button><button class="btn ok" id="stk">Test STK push</button><button class="btn" id="c2b">Simulate paybill payment</button><button class="btn" id="reg">Register C2B URLs</button><button class="btn" id="cbs">Callback log</button><a class="btn" href="#/settings">Settings</a></div></div>
   <div class="lesson small"><b>STK push</b>: we ask Safaricom to show a PIN prompt on the customer's phone; the result comes back by <b>callback</b> (needs a public https URL) or by <b>polling the query API</b> every few seconds (works on your PC with no public URL).
   <b>C2B / Paybill</b>: customer pays from the M-Pesa menu with their account number; Safaricom POSTs a confirmation to us and we renew that account. Unknown account numbers land here as <i>unmatched</i> for you to allocate.</div>
   <div id="ml">${mpesaTable(list)}</div></div>`;
   const bindRows = () => {
     $$('[data-alloc]').forEach(b => (b.onclick = async () => { const cs = (await GET('/api/customers')).rows; modal('Allocate payment to a customer', fields([{ name: 'customerId', label: 'Customer', type: 'select', options: cs.map(x => ({ value: x.id, label: `${x.accountNo} ${x.name}` })), full: true }]), { onSubmit: async v => { const r = await POST(`/api/mpesa/${b.dataset.alloc}/allocate`, v); showRouter(r.router, 'Payment allocated'); router(); } }); }));
     $$('[data-recheck]').forEach(b => (b.onclick = async () => { await POST(`/api/mpesa/${b.dataset.recheck}/recheck`); router(); }));
+    $$('[data-det]').forEach(b => (b.onclick = async () => { const r = await GET(`/api/mpesa/${b.dataset.det}/details`); modal(`Transaction ${r.id} - what was sent to / received from Safaricom`, `<div class="kv"><div>Status</div><div>${pill(r.status)} ${esc(r.message || '')}</div><div>CheckoutRequestID</div><div class="mono">${esc(r.checkoutRequestId || '-')}</div><div>Receipt</div><div class="mono">${esc(r.receipt || '-')}</div><div>Result code</div><div>${esc(r.resultCode ?? r.query?.ResultCode ?? '-')}</div></div><h3 style="margin-top:14px">Exchanges</h3><pre>${esc(JSON.stringify(r.exchanges || [], null, 2))}</pre>${r.callback ? `<h3>Callback</h3><pre>${esc(JSON.stringify(r.callback, null, 2))}</pre>` : ''}`, { wide: true }); }));
   };
   bindRows();
+  $('#diag').onclick = () => {
+    const m = modal('Diagnose M-Pesa', `<div class="lesson small">Runs every check an STK push needs. Enter <b>your own Safaricom number</b> to also send a real sandbox prompt (KES 1, no money moves in the sandbox). The test number 254708374149 never rings.</div>` + fields([{ name: 'phone', label: 'Your Safaricom number (optional)', placeholder: '07XXXXXXXX' }, { name: 'amount', label: 'Amount', type: 'number', value: 1 }]) + '<div id="dg"></div>', {
+      submit: 'Run checks', onSubmit: async v => {
+        $('#dg', m.el).innerHTML = '<div class="lesson">Checking...</div>';
+        const r = await POST('/api/mpesa/diagnose', v);
+        $('#dg', m.el).innerHTML = r.steps.map(x => `<div class="comment"><b style="color:${x.ok ? 'var(--ok)' : 'var(--bad)'}">${x.ok ? '&#10003;' : '&#10007;'} ${esc(x.name)}</b><div class="small">${esc(x.detail)}</div></div>`).join('') + (r.exchange ? `<h3>Last request / response</h3><pre>${esc(JSON.stringify(r.exchange, null, 2))}</pre>` : '') + '<div id="dgt"></div>';
+        if (r.txn) watchTxn(r.txn, $('#dgt', m.el));
+        return false;
+      },
+    });
+  };
   $('#test').onclick = async () => { try { toast(esc((await POST('/api/mpesa/test')).message), 'ok'); } catch (e) { fail(e); } };
   $('#stk').onclick = () => { const m = modal('Test STK push', `<div class="lesson small">Sandbox: use the test number <b>254708374149</b> or your own Safaricom number (sandbox pushes reach real phones but no money moves).</div>` + fields([{ name: 'phone', label: 'Phone', value: '254708374149' }, { name: 'amount', label: 'Amount', type: 'number', value: 1 }]) + '<div id="st"></div>', { submit: 'Send', onSubmit: async v => { const t = await POST('/api/mpesa/stk', v); watchTxn(t, $('#st', m.el)); return false; } }); };
   $('#c2b').onclick = () => modal('Simulate paybill (C2B) payment', `<div class="lesson small">${mode === 'simulate' ? 'Simulate mode: we post a Safaricom-style confirmation to our own endpoint.' : 'Sandbox: Safaricom sends the confirmation to your registered public URL (register C2B URLs first).'} Use a customer account number as the bill reference.</div>` + fields([{ name: 'billRef', label: 'Account number (BillRefNumber)', value: 'LN1001' }, { name: 'amount', label: 'Amount', type: 'number', value: 1500 }, { name: 'phone', label: 'Payer phone', value: '254708374149' }]), { submit: 'Pay', onSubmit: async v => { await POST('/api/mpesa/c2b/simulate', v); toast('Paybill payment sent', 'ok'); setTimeout(router, 1500); } });
@@ -703,7 +722,7 @@ routes.settings = async page => {
     const body = { ...v, smsTemplates: pref('tpl_'), smartolt: { url: v.so_url, token: v.so_token }, mpesa: pref('mp_'), messaging: { ...pref('ms_'), sms: pref('sms_'), whatsapp: pref('wa_') } };
     return body;
   };
-  const save = () => PUT('/api/settings', collect());
+  const save = async () => { await PUT('/api/settings', collect()); setBanner(await GET('/api/auth/me')); };
   $('#f').onsubmit = async e => { e.preventDefault(); try { await save(); toast('Settings saved', 'ok'); } catch (err) { fail(err); } };
   $('#mpTest').onclick = async () => { try { await save(); toast(esc((await POST('/api/mpesa/test')).message), 'ok'); } catch (e) { fail(e); } };
   $('#msgTest').onclick = async () => {
@@ -734,5 +753,45 @@ routes.learn = async page => {
   &bull; Open SmartOLT, authorize an ONU and link it to a customer - the customer's "Fiber / ONU" tab shows its signal.</div>
   <p>Full step-by-step guide: <span class="mono">docs/MIKROTIK-LAB.md</span> in the project folder.</p></div>`;
 };
+
+// ================================================= SQL CONSOLE (read-only, SQLite)
+async function sqlConsole(page, examples) {
+  const sc = await GET('/api/sql/schema');
+  const views = sc.objects.filter(o => o.type === 'view'), tables = sc.objects.filter(o => o.type === 'table');
+  page.innerHTML = `<div class="grid sqlgrid"><div class="card sqlside"><h3>Schema</h3><div class="small muted">${esc(sc.engine)}<br><span class="mono">${esc(sc.file)}</span></div>
+    <h4>Views (one column per field)</h4>${views.map(o => `<details><summary class="mono">${esc(o.name)}</summary><div class="small mono">${o.columns.map(esc).join(', ')}</div></details>`).join('')}
+    <h4>Tables</h4>${tables.map(o => `<details><summary class="mono">${esc(o.name)} <span class="muted">(${o.rows})</span></summary><div class="small mono">${esc(o.sql)}</div></details>`).join('')}</div>
+  <div class="card"><h2>SQL console</h2><div class="small muted">Read-only. Each record is a row: tables keep the full record as JSON in <span class="mono">data</span>; the <span class="mono">v_*</span> views expose the fields as normal columns. Ctrl+Enter runs.</div>
+    <div class="row sqlex">${examples.map(([l], i) => `<button class="btn sm" data-ex="${i}">${esc(l)}</button>`).join(' ')}</div>
+    <textarea id="sq" spellcheck="false" style="width:100%;min-height:130px;font-family:Consolas,monospace">${esc(examples[0][1])}</textarea>
+    <div class="row" style="margin:8px 0"><button class="btn primary" id="run">Run query</button><span id="sqm" class="small muted"></span><span style="flex:1"></span><button class="btn sm" id="csv">Export CSV</button></div>
+    <div id="sqr"></div></div></div>`;
+  let last = [];
+  const run = async () => {
+    $('#sqr').innerHTML = '';
+    try {
+      const r = await POST('/api/sql', { query: $('#sq').value });
+      last = r.rows;
+      $('#sqm').textContent = `${r.count} row(s) in ${r.ms} ms${r.truncated ? ' (first 1000 shown)' : ''}`;
+      const cols = [...new Set(r.rows.flatMap(Object.keys))];
+      $('#sqr').innerHTML = table(cols.map(c => ({ label: esc(c), render: x => `<span class="${typeof x[c] === 'number' ? 'mono' : ''}">${esc(x[c] === null ? 'NULL' : x[c])}</span>` })), r.rows, { empty: 'No rows' });
+    } catch (e) { $('#sqm').textContent = ''; $('#sqr').innerHTML = `<pre style="color:#ff8a80">${esc(e.message)}</pre>`; }
+  };
+  $('#run').onclick = run;
+  $('#sq').onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run(); };
+  $$('[data-ex]').forEach(b => (b.onclick = () => { $('#sq').value = examples[b.dataset.ex][1]; run(); }));
+  $('#csv').onclick = () => { if (!last.length) return; const cols = Object.keys(last[0]); const csv = [cols.join(','), ...last.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'query.csv'; a.click(); };
+  run();
+}
+routes.sql = page => sqlConsole(page, [
+  ['Expired customers', "SELECT accountNo, name, phone, connectionType, expiresAt\nFROM v_customers\nWHERE status = 'expired'\nORDER BY expiresAt"],
+  ['Revenue per month', "SELECT substr(createdAt, 1, 7) AS month, COUNT(*) AS payments, SUM(amount) AS total\nFROM v_payments\nGROUP BY month\nORDER BY month DESC"],
+  ['Top customers (JOIN)', "SELECT c.accountNo, c.name, SUM(p.amount) AS paid, COUNT(p.id) AS payments\nFROM v_customers c\nJOIN v_payments p ON p.customerId = c.id\nGROUP BY c.id\nORDER BY paid DESC\nLIMIT 10"],
+  ['Customers per package', "SELECT pk.name AS package, pk.type, pk.price, COUNT(c.id) AS customers\nFROM v_packages pk\nLEFT JOIN v_customers c ON c.packageId = pk.id\nGROUP BY pk.id\nORDER BY customers DESC"],
+  ['M-Pesa by status', "SELECT kind, status, COUNT(*) AS n, SUM(amount) AS amount\nFROM v_mpesa\nGROUP BY kind, status"],
+  ['Expiring in 3 days', "SELECT accountNo, name, phone, expiresAt\nFROM v_customers\nWHERE status = 'active'\n  AND expiresAt < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+3 days')\nORDER BY expiresAt"],
+  ['Messages not sent', "SELECT createdAt, channel, \"to\", kind, status\nFROM v_sms\nWHERE status NOT LIKE 'sent%'\nORDER BY id DESC\nLIMIT 50"],
+  ['Raw JSON (json_extract)', "SELECT id, json_extract(data, '$.name') AS name, json_extract(data, '$.balance') AS balance, data\nFROM customers\nLIMIT 5"],
+]);
 
 boot();

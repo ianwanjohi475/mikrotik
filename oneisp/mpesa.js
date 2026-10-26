@@ -11,6 +11,11 @@ function normalizePhone(p) {
   return s;
 }
 
+function log(ex) {
+  if (process.env.MPESA_QUIET) return;
+  console.log(`[M-Pesa] ${ex.method} ${ex.url.replace(/^https?:\/\/[^/]+/, '')} -> ${ex.status || 'NO CONNECTION'} ${JSON.stringify(ex.error || ex.response).slice(0, 300)}`);
+}
+
 function timestamp(d = new Date()) {
   // Daraja wants local Kenyan time YYYYMMDDHHmmss
   const k = new Date(d.getTime() + (3 * 60 + d.getTimezoneOffset()) * 60000);
@@ -25,15 +30,26 @@ class Mpesa {
 
   async request(method, path, body, auth) {
     let r;
+    const authHeader = auth || `Bearer ${await this.token()}`;
+    // every exchange is kept (secrets masked) so you can see exactly what Safaricom was sent and answered
+    const ex = { at: new Date().toISOString(), method, url: this.base() + path, body: body ? { ...body, ...(body.Password ? { Password: '(base64 shortcode+passkey+timestamp)' } : {}) } : undefined };
+    this.last = ex;
     try {
       r = await fetch(this.base() + path, {
-        method, signal: AbortSignal.timeout(20000),
-        headers: { Authorization: auth || `Bearer ${await this.token()}`, 'Content-Type': 'application/json' },
+        method, signal: AbortSignal.timeout(30000),
+        headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : undefined,
       });
-    } catch (e) { throw new Error(`Cannot reach M-Pesa (${this.base()}): ${e.cause?.code || e.message}`); }
+    } catch (e) {
+      ex.error = `Cannot reach ${this.base()}: ${e.cause?.code || e.cause?.message || e.message}`;
+      log(ex);
+      throw new Error(ex.error + ' - check the PC has internet and no firewall/proxy blocks it');
+    }
     const text = await r.text();
-    let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
+    let j; try { j = JSON.parse(text); } catch { j = { raw: text.slice(0, 500) || '(empty body)' }; }
+    ex.status = r.status;
+    ex.response = j.access_token ? { ...j, access_token: j.access_token.slice(0, 6) + '...' } : j;
+    log(ex);
     if (!r.ok) {
       const err = new Error(j.errorMessage || j.ResultDesc || j.raw || `HTTP ${r.status}`);
       err.code = j.errorCode; err.status = r.status; err.body = j;
@@ -47,8 +63,10 @@ class Mpesa {
     const { consumerKey, consumerSecret } = this.cfg;
     if (!consumerKey || !consumerSecret) throw new Error('M-Pesa consumer key/secret missing (Settings > M-Pesa)');
     const basic = 'Basic ' + Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
-    const j = await this.request('GET', '/oauth/v1/generate?grant_type=client_credentials', null, basic);
-    if (!j.access_token) throw new Error('M-Pesa did not return an access token - check consumer key/secret');
+    let j;
+    try { j = await this.request('GET', '/oauth/v1/generate?grant_type=client_credentials', null, basic); }
+    catch (e) { if (e.status === 400 || e.status === 401) throw new Error(`Safaricom rejected the consumer key/secret (HTTP ${e.status}). Copy them again from your app on developer.safaricom.co.ke (no spaces)`); throw e; }
+    if (!j.access_token) throw new Error('Safaricom returned no access token - the consumer key/secret are wrong, or the app has no sandbox products (Lipa Na M-Pesa Sandbox) enabled');
     this._token = j.access_token;
     this._exp = Date.now() + (Number(j.expires_in || 3599) - 60) * 1000;
     return this._token;

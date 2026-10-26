@@ -19,7 +19,7 @@ async function post(url, { headers = {}, json, form, auth }) {
 }
 
 async function sendSms(cfg, to, text) {
-  if (cfg.provider !== 'africastalking') return { status: 'delivered (simulated)' };
+  if (cfg.provider !== 'africastalking') return { status: 'NOT SENT - SMS provider is "simulate" (Settings > Messaging)' };
   const host = cfg.sandbox ? 'https://api.sandbox.africastalking.com' : 'https://api.africastalking.com';
   const j = await post(`${host}/version1/messaging`, {
     headers: { apiKey: cfg.apiKey },
@@ -48,7 +48,7 @@ async function sendWhatsApp(cfg, to, text) {
     });
     return { status: `sent via Twilio WhatsApp (${j.status})`, providerId: j.sid };
   }
-  return { status: 'delivered (simulated)' };
+  return { status: 'NOT SENT - WhatsApp provider is "simulate" (Settings > Messaging)' };
 }
 
 // channel: 'sms' | 'whatsapp'

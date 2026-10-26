@@ -497,4 +497,43 @@ routes.learn = async page => {
   <p>More: <span class="mono">docs/SMARTOLT-GPON.md</span></p></div>`;
 };
 
+// ================================================= SQL CONSOLE (read-only, SQLite)
+async function sqlConsole(page, examples) {
+  const sc = await GET('/api/sql/schema');
+  const views = sc.objects.filter(o => o.type === 'view'), tables = sc.objects.filter(o => o.type === 'table');
+  page.innerHTML = `<div class="grid sqlgrid"><div class="panel sqlside"><h3>Schema</h3><div class="small muted">${esc(sc.engine)}<br><span class="mono">${esc(sc.file)}</span></div>
+    <h4>Views (one column per field)</h4>${views.map(o => `<details><summary class="mono">${esc(o.name)}</summary><div class="small mono">${o.columns.map(esc).join(', ')}</div></details>`).join('')}
+    <h4>Tables</h4>${tables.map(o => `<details><summary class="mono">${esc(o.name)} <span class="muted">(${o.rows})</span></summary><div class="small mono">${esc(o.sql)}</div></details>`).join('')}</div>
+  <div class="panel"><h2>SQL console</h2><div class="small muted">Read-only. Each record is a row: tables keep the full record as JSON in <span class="mono">data</span>; the <span class="mono">v_*</span> views expose the fields as normal columns. Ctrl+Enter runs.</div>
+    <div class="row sqlex">${examples.map(([l], i) => `<button class="btn sm" data-ex="${i}">${esc(l)}</button>`).join(' ')}</div>
+    <textarea id="sq" spellcheck="false" style="width:100%;min-height:130px;font-family:Consolas,monospace">${esc(examples[0][1])}</textarea>
+    <div class="row" style="margin:8px 0"><button class="btn primary" id="run">Run query</button><span id="sqm" class="small muted"></span><span style="flex:1"></span><button class="btn sm" id="csv">Export CSV</button></div>
+    <div id="sqr"></div></div></div>`;
+  let last = [];
+  const run = async () => {
+    $('#sqr').innerHTML = '';
+    try {
+      const r = await POST('/api/sql', { query: $('#sq').value });
+      last = r.rows;
+      $('#sqm').textContent = `${r.count} row(s) in ${r.ms} ms${r.truncated ? ' (first 1000 shown)' : ''}`;
+      const cols = [...new Set(r.rows.flatMap(Object.keys))];
+      $('#sqr').innerHTML = table(cols.map(c => ({ label: esc(c), render: x => `<span class="${typeof x[c] === 'number' ? 'mono' : ''}">${esc(x[c] === null ? 'NULL' : x[c])}</span>` })), r.rows, { empty: 'No rows' });
+    } catch (e) { $('#sqm').textContent = ''; $('#sqr').innerHTML = `<pre style="color:#ff8a80">${esc(e.message)}</pre>`; }
+  };
+  $('#run').onclick = run;
+  $('#sq').onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run(); };
+  $$('[data-ex]').forEach(b => (b.onclick = () => { $('#sq').value = examples[b.dataset.ex][1]; run(); }));
+  $('#csv').onclick = () => { if (!last.length) return; const cols = Object.keys(last[0]); const csv = [cols.join(','), ...last.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'query.csv'; a.click(); };
+  run();
+}
+routes.sql = page => sqlConsole(page, [
+  ['ONUs in LOS', "SELECT sn, name, board, port, onuId, lastDownCause, lastDownAt\nFROM v_onus\nWHERE status = 'los'"],
+  ['Weak signal', "SELECT sn, name, round(rxPower, 2) AS onu_rx, round(oltRxPower, 2) AS olt_rx\nFROM v_onus\nWHERE status = 'online' AND rxPower < -25\nORDER BY rxPower"],
+  ['ONUs per PON port', "SELECT o.name AS olt, u.board, u.port, COUNT(*) AS onus, SUM(u.status = 'online') AS online\nFROM v_onus u JOIN v_olts o ON o.id = u.oltId\nGROUP BY u.oltId, u.board, u.port\nORDER BY olt, u.board, u.port"],
+  ['Events last 24h', "SELECT type, severity, COUNT(*) AS n\nFROM v_events\nWHERE createdAt > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')\nGROUP BY type, severity\nORDER BY n DESC"],
+  ['Splitter usage', "SELECT d.name AS odb, d.splitter, d.ports, COUNT(u.id) AS used\nFROM v_odbs d LEFT JOIN v_onus u ON u.odbId = d.id\nGROUP BY d.id"],
+  ['Linked to OneISP', "SELECT sn, name, externalId, pppoeUser, mode, vlan\nFROM v_onus\nWHERE externalId IS NOT NULL"],
+  ['Commands sent', "SELECT createdAt, oltName, action, sn, via\nFROM v_cliLog\nORDER BY id DESC\nLIMIT 30"],
+]);
+
 boot();

@@ -57,7 +57,8 @@ app.post('/api/auth/logout', (req, res) => { sessions.delete(req.cookies.oisid);
 app.get('/api/auth/me', req => {
   const u = db.get('users', sessions.get(req.cookies.oisid));
   if (!u) throw new HttpError(401, 'Login required');
-  return { user: safeUser(u), company: settings().companyName, currency: settings().currency };
+  const st = settings();
+  return { user: safeUser(u), company: st.companyName, currency: st.currency, mpesaMode: st.mpesa.mode, smsProvider: st.messaging.sms.provider, whatsappProvider: st.messaging.whatsapp.provider };
 });
 
 // ---------------------------------------------------------------- router plumbing
@@ -153,6 +154,14 @@ function sendSms(to, message, customerId, kind = 'manual', channel) {
   return recs[0] || null;
 }
 const numbersOf = c => ({ sms: c.phone, whatsapp: c.whatsapp || c.phone });
+const realProvider = ch => settings().messaging[ch]?.provider && settings().messaging[ch].provider !== 'simulate';
+// The chosen channel for hotspot codes, falling back to whichever channel has a real provider configured.
+function hotspotChannel() {
+  const want = settings().messaging.hotspotChannel || 'whatsapp';
+  if (want === 'both') return 'both';
+  const other = want === 'sms' ? 'whatsapp' : 'sms';
+  return !realProvider(want) && realProvider(other) ? other : want;
+}
 function smsTemplate(c, key, extra, channel) {
   const tpl = settings().smsTemplates[key];
   if (tpl && settings().smsEnabled) sendSms(numbersOf(c), render(tpl, c, extra), c.id, key, channel);
@@ -722,6 +731,8 @@ app.delete('/api/users/:id', req => {
   return { ok: true };
 });
 
+app.get('/api/sql/schema', () => ({ engine: db.sql ? 'SQLite ' + (db.db.prepare('select sqlite_version() v').get().v) : 'JSON file', file: db.file, objects: db.schema() }));
+app.post('/api/sql', req => { try { return db.query(req.body.query); } catch (e) { throw new HttpError(400, e.message); } });
 app.get('/api/settings', () => settings());
 app.put('/api/settings', req => {
   const s = settings();
@@ -731,6 +742,15 @@ app.put('/api/settings', req => {
   s.reminderDays = Number(s.reminderDays);
   if (b.smsTemplates) s.smsTemplates = { ...s.smsTemplates, ...b.smsTemplates };
   if (b.smartolt) s.smartolt = { ...s.smartolt, ...b.smartolt };
+  const trim = o => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]));
+  if (b.mpesa) b.mpesa = trim(b.mpesa);
+  if (b.messaging) { b.messaging = trim(b.messaging); b.messaging.sms = trim(b.messaging.sms); b.messaging.whatsapp = trim(b.messaging.whatsapp); }
+  if (b.mpesa?.callbackBase) {
+    const u = b.mpesa.callbackBase.replace(/\/$/, '');
+    if (!/^https:\/\//i.test(u)) throw new HttpError(400, 'Public base URL must start with https:// (Safaricom only calls https URLs)');
+    if (/m-?pesa|safaricom|exe|exec|cmd|sql|query/i.test(u)) throw new HttpError(400, 'Safaricom rejects callback URLs containing words like mpesa, safaricom, exe, cmd, sql or query - use another tunnel name');
+    b.mpesa.callbackBase = u;
+  }
   if (b.mpesa) { s.mpesa = { ...s.mpesa, ...b.mpesa }; s.mpesa.c2bRejectUnknown = s.mpesa.c2bRejectUnknown === true || s.mpesa.c2bRejectUnknown === 'true'; }
   if (b.messaging) {
     const m = b.messaging;
@@ -744,8 +764,7 @@ app.put('/api/settings', req => {
 app.post('/api/settings/smartolt/test', async () => { const j = await smartolt('/api/system/get_olts'); return { ok: true, olts: j.response.length }; });
 app.post('/api/settings/reset', req => {
   if (req.user.role !== 'admin') throw new HttpError(403, 'Admins only');
-  const fresh = new Store(db.file + '.reset', seed.seed);
-  db.data = fresh.data; db.flush(); require('fs').unlinkSync(fresh.file);
+  db.reset(seed.seed);
   sessions.clear();
   return { ok: true };
 });
@@ -777,10 +796,10 @@ async function startPayment({ phone, amount, purpose, payload = {}, reference, d
     db.save();
     return publicTxn(rec);
   }
-  const callbackUrl = cfg.callbackBase ? cfg.callbackBase.replace(/\/$/, '') + '/api/portal/mpesa/callback' : 'https://example.com/oneisp-no-callback';
+  const callbackUrl = cfg.callbackBase ? cfg.callbackBase.replace(/\/$/, '') + '/api/portal/pay/stk-result' : 'https://example.com/callback';
   try {
-    const r = await mp().stkPush({ phone: msisdn, amount, reference, description, callbackUrl });
-    Object.assign(rec, { checkoutRequestId: r.CheckoutRequestID, merchantRequestId: r.MerchantRequestID, message: `${r.CustomerMessage || 'Request sent'} - check your phone and enter your M-Pesa PIN.`, request: { callbackUrl, reference, at: iso(now()) } });
+    const r = await mp().stkPush({ phone: msisdn, amount, reference, description, callbackUrl }).finally(() => { rec.exchanges = [mp().last]; });
+    Object.assign(rec, { checkoutRequestId: r.CheckoutRequestID, merchantRequestId: r.MerchantRequestID, message: msisdn === '254708374149' ? 'Sent to the Safaricom TEST number 254708374149 - no phone will ring. Use your own Safaricom number to see the PIN prompt.' : `${r.CustomerMessage || 'Request sent'} - check your phone ${msisdn} and enter your M-Pesa PIN.`, request: { callbackUrl, reference, at: iso(now()) } });
   } catch (e) {
     Object.assign(rec, { status: 'failed', message: 'M-Pesa: ' + e.message, error: e.body || e.message });
     db.save();
@@ -837,9 +856,9 @@ const FULFIL = {
     }
     await applyPayment({ customerId: c.id, amount: rec.amount, method: 'mpesa', reference: receipt, by: 'hotspot-portal', silent: true });
     delete c._profileChanged;
-    const m = settings().messaging;
-    sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site.name, receipt }), c.id, 'hotspot-code', m.hotspotChannel);
-    return { username: c.username, password: c.password, code: c.username, expiresAt: c.expiresAt, sentVia: m.hotspotChannel, message: `Paid (${receipt}). Your WiFi code is ${c.username} - also sent to ${rec.phone} by ${m.hotspotChannel}.` };
+    const via = hotspotChannel();
+    sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site.name, receipt }), c.id, 'hotspot-code', via);
+    return { username: c.username, password: c.password, code: c.username, expiresAt: c.expiresAt, sentVia: via, message: `Paid (${receipt}). Your WiFi code is ${c.username} - also sent to ${rec.phone} by ${via}.` };
   },
 };
 
@@ -855,7 +874,7 @@ async function pollMpesa() {
       if (age < 8000 || (rec.lastQueryAt && Date.now() - new Date(rec.lastQueryAt) < 6000)) continue;
       rec.lastQueryAt = iso(now());
       try {
-        const q = await mp().stkQuery(rec.checkoutRequestId);
+        const q = await mp().stkQuery(rec.checkoutRequestId).finally(() => { rec.exchanges = [...(rec.exchanges || []), mp().last].slice(-6); });
         rec.query = q;
         const code = q.ResultCode !== undefined ? Number(q.ResultCode) : NaN;
         if (code === 0) await completePayment(rec, { receipt: 'STK' + rec.checkoutRequestId.slice(-8).toUpperCase() });
@@ -869,7 +888,7 @@ async function pollMpesa() {
 }
 
 // --- Daraja callbacks (public). Point Settings > M-Pesa > Public base URL at a tunnel to this server.
-app.post('/api/portal/mpesa/callback', async req => {
+app.post('/api/portal/pay/stk-result', async req => {
   const cb = req.body?.Body?.stkCallback;
   db.insert('mpesaCallbacks', { kind: 'stk', body: req.body });
   db.trim('mpesaCallbacks', 500);
@@ -891,12 +910,12 @@ app.post('/api/portal/mpesa/callback', async req => {
   return { ResultCode: 0, ResultDesc: 'Accepted' };
 });
 // C2B: customer pays to the paybill from the M-Pesa menu using their account number.
-app.post('/api/portal/mpesa/c2b/validation', req => {
+app.post('/api/portal/pay/c2b-validate', req => {
   const ref = String(req.body.BillRefNumber || '').trim().toLowerCase();
   const ok = !settings().mpesa.c2bRejectUnknown || db.findOne('customers', c => c.accountNo.toLowerCase() === ref || c.username.toLowerCase() === ref);
   return ok ? { ResultCode: 0, ResultDesc: 'Accepted' } : { ResultCode: 'C2B00012', ResultDesc: 'Invalid Account Number' };
 });
-app.post('/api/portal/mpesa/c2b/confirmation', async req => {
+app.post('/api/portal/pay/c2b-confirm', async req => {
   const b = req.body || {};
   if (db.findOne('mpesa', r => r.kind === 'c2b' && r.receipt === b.TransID)) return { ResultCode: 0, ResultDesc: 'Accepted' };
   const ref = String(b.BillRefNumber || '').trim().toLowerCase();
@@ -911,6 +930,29 @@ app.post('/api/portal/mpesa/c2b/confirmation', async req => {
 
 // --- admin M-Pesa endpoints
 app.get('/api/mpesa', req => db.col('mpesa').filter(r => !req.query.status || r.status === req.query.status).slice(-500).reverse().map(r => ({ ...r, customerName: r.customerId ? db.get('customers', r.customerId)?.name : null })));
+app.get('/api/mpesa/:id/details', req => { const r = db.get('mpesa', req.params.id); if (!r) throw new HttpError(404, 'Not found'); return r; });
+// Step-by-step check of everything an STK push needs; optionally sends a real push.
+app.post('/api/mpesa/diagnose', async req => {
+  const cfg = settings().mpesa;
+  const steps = [];
+  const step = (name, ok, detail) => steps.push({ name, ok, detail });
+  step('Mode', cfg.mode !== 'simulate', cfg.mode === 'simulate' ? 'Mode is SIMULATE - no request ever goes to Safaricom and no phone gets a prompt. Choose "Daraja sandbox" and save.' : `Mode: ${cfg.mode} (${mp().base()})`);
+  step('Consumer key / secret', !!(cfg.consumerKey && cfg.consumerSecret), cfg.consumerKey ? `key ${cfg.consumerKey.slice(0, 6)}... (${cfg.consumerKey.length} chars), secret ${cfg.consumerSecret ? cfg.consumerSecret.length + ' chars' : 'MISSING'}` : 'Consumer key missing');
+  step('Shortcode + passkey', !!cfg.shortcode && /^[0-9a-f]{64}$/i.test(cfg.passkey || ''), `shortcode ${cfg.shortcode}, passkey ${cfg.passkey ? cfg.passkey.length + ' chars' : 'MISSING'}${cfg.mode === 'sandbox' && cfg.shortcode !== '174379' ? ' - for the sandbox STK push use shortcode 174379 with its sandbox passkey' : ''}`);
+  step('Callback URL', true, cfg.callbackBase ? `${cfg.callbackBase}/api/portal/pay/stk-result (results arrive by callback AND polling)` : 'None set - fine: results are fetched by polling the STK query API every few seconds');
+  if (cfg.mode === 'simulate') return { ok: false, steps };
+  _mpKey = '';
+  try { await mp().token(); step('Connect + OAuth token', true, 'Safaricom accepted the consumer key/secret'); }
+  catch (e) { step('Connect + OAuth token', false, e.message); return { ok: false, steps, exchange: mp().last }; }
+  if (req.body.phone) {
+    try {
+      const t = await startPayment({ phone: req.body.phone, amount: Number(req.body.amount || 1), purpose: 'test', payload: { by: 'diagnose' }, reference: 'TEST', description: 'Test' });
+      step('STK push', true, t.message);
+      return { ok: true, steps, txn: t, exchange: mp().last };
+    } catch (e) { step('STK push', false, e.message); return { ok: false, steps, exchange: mp().last }; }
+  }
+  return { ok: true, steps };
+});
 app.get('/api/mpesa/callbacks', () => db.col('mpesaCallbacks').slice(-100).reverse());
 app.post('/api/mpesa/test', async () => {
   const cfg = settings().mpesa;
@@ -936,13 +978,13 @@ app.post('/api/mpesa/c2b/register', async () => {
   const cfg = settings().mpesa;
   if (!cfg.callbackBase) throw new HttpError(400, 'Set "Public base URL" first (a https tunnel to this server)');
   const base = cfg.callbackBase.replace(/\/$/, '');
-  return mp().c2bRegister({ confirmationUrl: base + '/api/portal/mpesa/c2b/confirmation', validationUrl: base + '/api/portal/mpesa/c2b/validation' }).catch(e => { throw new HttpError(502, e.message); });
+  return mp().c2bRegister({ confirmationUrl: base + '/api/portal/pay/c2b-confirm', validationUrl: base + '/api/portal/pay/c2b-validate' }).catch(e => { throw new HttpError(502, e.message); });
 });
 app.post('/api/mpesa/c2b/simulate', async req => {
   if (settings().mpesa.mode === 'simulate') {
     // no Daraja: feed our own confirmation endpoint, exactly what Safaricom would POST
     const body = { TransactionType: 'Pay Bill', TransID: 'SIM' + rand(7, RECEIPT_CHARS), TransTime: require('./mpesa').timestamp(), TransAmount: String(req.body.amount), BusinessShortCode: settings().mpesa.shortcode, BillRefNumber: req.body.billRef, MSISDN: normalizePhone(req.body.phone || '254708374149'), FirstName: 'John', LastName: 'Doe' };
-    const r = await fetch(`http://127.0.0.1:${PORT}/api/portal/mpesa/c2b/confirmation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/portal/pay/c2b-confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     return { simulated: true, sent: body, response: await r.json() };
   }
   return mp().c2bSimulate({ amount: req.body.amount, phone: req.body.phone || '254708374149', billRef: req.body.billRef }).catch(e => { throw new HttpError(502, e.message); });
@@ -956,7 +998,7 @@ app.get('/api/sms/:id', req => db.get('sms', req.params.id) || {});
 // ---------------------------------------------------------------- customer portals (public)
 app.get('/api/portal/site/:id', req => {
   const s = siteOr404(req.params.id);
-  return { site: { id: s.id, name: s.name }, company: settings().companyName, currency: settings().currency, paybill: settings().paybill, mpesaMode: settings().mpesa.mode, sendVia: settings().messaging.hotspotChannel, packages: db.find('packages', p => p.type === 'hotspot' && p.public !== false) };
+  return { site: { id: s.id, name: s.name }, company: settings().companyName, currency: settings().currency, paybill: settings().paybill, mpesaMode: settings().mpesa.mode, sendVia: hotspotChannel(), packages: db.find('packages', p => p.type === 'hotspot' && p.public !== false) };
 });
 app.post('/api/portal/hotspot/pay', async req => {
   const site = siteOr404(req.body.siteId);
@@ -985,8 +1027,8 @@ app.post('/api/portal/hotspot/resend', req => {
   const c = db.findOne('customers', x => x.connectionType === 'hotspot' && x.siteId === Number(req.body.siteId) && x.phone === phone && computeStatus(x) === 'active');
   if (!c) throw new HttpError(404, 'No active WiFi package for that number');
   const site = siteOf(c);
-  sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site?.name, receipt: '-' }), c.id, 'hotspot-code', settings().messaging.hotspotChannel);
-  return { message: `Code re-sent to ${phone} by ${settings().messaging.hotspotChannel}` };
+  sendSms(numbersOf(c), render(settings().smsTemplates.hotspotCode, c, { code: c.username, site: site?.name, receipt: '-' }), c.id, 'hotspot-code', hotspotChannel());
+  return { message: `Code re-sent to ${phone} by ${hotspotChannel()}` };
 });
 function findAccount(key) {
   key = String(need(key, 'Enter account number')).trim().toLowerCase();
@@ -1143,4 +1185,9 @@ setInterval(() => tick(true), 60000);
 process.on('SIGINT', () => { db.flush(); process.exit(0); });
 process.on('SIGTERM', () => { db.flush(); process.exit(0); });
 
-app.listen(PORT, HOST, () => console.log(`OneISP simulator running on http://localhost:${PORT}  (login: admin / admin)`));
+app.listen(PORT, HOST, () => {
+  const st = settings();
+  console.log(`OneISP simulator running on http://localhost:${PORT}  (login: admin / admin)`);
+  console.log(`  M-Pesa: ${st.mpesa.mode.toUpperCase()}${st.mpesa.mode === 'simulate' ? ' (no real prompts - Settings > M-Pesa)' : ` shortcode ${st.mpesa.shortcode}, callback ${st.mpesa.callbackBase || 'none (polling)'}`}`);
+  console.log(`  SMS: ${st.messaging.sms.provider}   WhatsApp: ${st.messaging.whatsapp.provider}   hotspot codes by: ${hotspotChannel()}`);
+});

@@ -16,7 +16,7 @@ This guide takes you from a bare CHR to a working small ISP: PPPoE, hotspot, DHC
                  +-------------------+
    Your PC ------| ether2 host-only  |  CHR  (RouterOS 7)
  192.168.56.1    | 192.168.56.101    |
- OneISP :3000    +-------------------+
+ OneISP :8080    +-------------------+
  SmartOLT :4000     ether3  ether4  ether5   (VirtualBox "Internal network" adapters)
                       |       |       |
                  PPPoE/    DHCP     Static

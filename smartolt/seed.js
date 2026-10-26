@@ -2,7 +2,7 @@
 const DEFAULT_SETTINGS = {
   companyName: 'Lab Telecom', username: 'admin', password: 'admin',
   apiToken: 'smartolt-demo-token',
-  oneisp: { url: 'http://localhost:3000', token: 'oneisp-demo-token' },
+  oneisp: { url: 'http://localhost:8080', token: 'oneisp-demo-token' },
   signalWarning: -25, signalCritical: -27,
   simulation: { faults: true, autofind: true, speed: 1 },
   tr069Url: 'http://10.30.0.10:7547',

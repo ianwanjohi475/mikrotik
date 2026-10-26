@@ -179,7 +179,7 @@ function bootstrapScript(site, settings, serverIp) {
 /ip firewall filter add chain=forward in-interface=${s.staticInterface} src-address-list=!OI-ACTIVE action=drop comment="OneISP: unknown static IPs"
 /ip firewall filter add chain=forward in-interface=${s.dhcpInterface} src-address-list=!OI-ACTIVE action=drop comment="OneISP: unknown DHCP IPs"
 ${settings.expiredAction === 'redirect' ? `# Redirect web traffic of expired users to the pay portal
-/ip firewall nat add chain=dstnat src-address-list=OI-EXPIRED protocol=tcp dst-port=80 action=dst-nat to-addresses=${serverIp} to-ports=${settings.portalPort || 3000} comment="OneISP: expired -> portal"` : '# (expiredAction=disable: expired PPPoE secrets are disabled instead of redirected)'}
+/ip firewall nat add chain=dstnat src-address-list=OI-EXPIRED protocol=tcp dst-port=80 action=dst-nat to-addresses=${serverIp} to-ports=${settings.portalPort || 8080} comment="OneISP: expired -> portal"` : '# (expiredAction=disable: expired PPPoE secrets are disabled instead of redirected)'}
 
 # ---- 8. Identity & time (expiry depends on correct time!) ----
 /system identity set name="${s.name.replace(/"/g, '')}"

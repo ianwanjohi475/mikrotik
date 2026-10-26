@@ -1,5 +1,5 @@
 // OneISP simulator - ISP billing & customer management that provisions a MikroTik router.
-// Run: node oneisp/server.js   then open http://localhost:3000  (login admin / admin)
+// Run: node oneisp/server.js   then open http://localhost:8080  (login admin / admin)
 const path = require('path');
 const crypto = require('crypto');
 const { createApp, HttpError } = require('../lib/http');
@@ -8,7 +8,7 @@ const { toCli, RestClient, SimRouter } = require('../lib/routeros');
 const P = require('./provision');
 const seed = require('./seed');
 
-const PORT = Number(process.env.ONEISP_PORT || 3000);
+const PORT = Number(process.env.ONEISP_PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 const db = new Store(path.join(__dirname, '..', 'data', 'oneisp.json'), seed.seed);
 const app = createApp({ publicDir: path.join(__dirname, 'public') });
@@ -260,10 +260,10 @@ app.get('/api/sites/:id/router/:table', async req => {
   try { return { menu, cli: `/${menu.slice(1).replace(/\//g, ' ')} print`, rows: await routerFor(s).list(menu) }; }
   catch (e) { throw new HttpError(502, e.message); }
 });
-app.get('/api/sites/:id/script', (req, res) => res.send(P.bootstrapScript(siteOr404(req.params.id), settings(), settings().serverIp), 'text/plain; charset=utf-8'));
+app.get('/api/sites/:id/script', (req, res) => res.send(P.bootstrapScript(siteOr404(req.params.id), { ...settings(), portalPort: PORT }, settings().serverIp), 'text/plain; charset=utf-8'));
 app.post('/api/sites/:id/script/push', async req => {
   const s = siteOr404(req.params.id);
-  const script = P.bootstrapScript(s, settings(), settings().serverIp).split('\n').filter(l => l && !l.startsWith('#')).join('\n');
+  const script = P.bootstrapScript(s, { ...settings(), portalPort: PORT }, settings().serverIp).split('\n').filter(l => l && !l.startsWith('#')).join('\n');
   return applyOps(s, [{ action: 'exec', script, note: 'Bootstrap script via /rest/execute' }], 'Push provisioning script');
 });
 app.get('/api/sites/:id/hotspot-login.html', (req, res) => {

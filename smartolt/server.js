@@ -553,6 +553,8 @@ function backfill() {
   db.save();
 }
 
+// data created before OneISP moved from port 3000 to 8080
+if (settings().oneisp?.url === 'http://localhost:3000') { settings().oneisp.url = 'http://localhost:8080'; db.save(); }
 backfill();
 setInterval(tick, 10000);
 setTimeout(() => syncAllFromOneIsp().then(n => n && console.log(`Pulled ${n} PPPoE credential(s) from OneISP`)), 3000);

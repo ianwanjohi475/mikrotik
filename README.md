@@ -4,7 +4,7 @@ Two separate web apps that copy how **OneISP** (ISP billing and customer managem
 
 | App | URL | Login | What it does |
 |---|---|---|---|
-| **OneISP simulator** | http://localhost:3000 | `admin` / `admin` | Sites (MikroTik routers), packages, bandwidth policies, vouchers, PPPoE / Static / DHCP / Hotspot customers, payments with simulated M-Pesa, expiry, leads, tickets, SMS, hotspot captive portal, customer self-service portal |
+| **OneISP simulator** | http://localhost:8080 | `admin` / `admin` | Sites (MikroTik routers), packages, bandwidth policies, vouchers, PPPoE / Static / DHCP / Hotspot customers, payments with simulated M-Pesa, expiry, leads, tickets, SMS, hotspot captive portal, customer self-service portal |
 | **SmartOLT simulator** | http://localhost:4000 | `admin` / `admin` | Huawei & ZTE OLTs, autofind of unconfigured ONUs, authorization, configured list with filters, ONU details, signal & traffic graphs, events, diagnostics, reports, a working **OLT telnet CLI**, settings (zones, ODBs/splitters, ONU types, speed profiles, VLANs) |
 
 They **work together** the same way the real ones do:
@@ -28,7 +28,7 @@ Windows: double-click **`start-windows.bat`**. Or from a terminal in this folder
 
 ```bash
 npm start            # both apps
-npm run oneisp       # only OneISP  (port 3000)
+npm run oneisp       # only OneISP  (port 8080)
 npm run smartolt     # only SmartOLT (port 4000)
 npm run reset        # delete data/ -> demo data is re-created next start
 ```

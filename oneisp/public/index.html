@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>one ISP (simulator)</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form class="login-box" id="loginForm">
+    <div class="brand big">one <span>ISP</span></div>
+    <p class="muted">Simulator - practice ISP billing against your MikroTik</p>
+    <label>Username<input name="username" value="admin" autocomplete="username"></label>
+    <label>Password<input name="password" type="password" value="admin" autocomplete="current-password"></label>
+    <button class="btn primary block">Sign in</button>
+    <p class="muted small">Default: admin / admin</p>
+  </form>
+</div>
+<div id="shell" class="shell hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">one <span>ISP</span><button class="icon-btn" id="collapse" title="Toggle menu">&#9678;</button></div>
+    <nav id="nav"></nav>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn mobile-only" id="menuBtn">&#9776;</button>
+      <div class="crumb" id="crumb"></div>
+      <div class="top-right">
+        <button class="icon-btn" id="themeBtn" title="Toggle theme">&#9788;</button>
+        <span id="userName"></span>
+        <div class="avatar"><i class="dot"></i></div>
+        <button class="btn ghost sm" id="logoutBtn">Logout</button>
+      </div>
+    </header>
+    <section id="page" class="page"></section>
+  </main>
+</div>
+<div id="modalRoot"></div>
+<div id="toasts" class="toasts"></div>
+<div id="cmdPanel" class="cmd-panel hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>

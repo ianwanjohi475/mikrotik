@@ -1,0 +1,13 @@
+{
+  "name": "isp-lab-simulators",
+  "version": "1.0.0",
+  "description": "OneISP-style billing and SmartOLT-style OLT manager simulators for practicing MikroTik / GPON ISP operations",
+  "private": true,
+  "scripts": {
+    "start": "node start-all.js",
+    "oneisp": "node oneisp/server.js",
+    "smartolt": "node smartolt/server.js",
+    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true});console.log('data/ removed - demo data will be re-created on next start')\""
+  },
+  "engines": { "node": ">=18" }
+}

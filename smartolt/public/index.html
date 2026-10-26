@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartOLT (simulator)</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form class="login-box" id="loginForm">
+    <div class="logo big">Smart<b>OLT</b></div>
+    <p class="muted">Simulator - practice GPON / ONU provisioning</p>
+    <input name="username" value="admin" placeholder="Username">
+    <input name="password" type="password" value="admin" placeholder="Password">
+    <button class="btn primary block">Login</button>
+    <p class="muted small">Default: admin / admin</p>
+  </form>
+</div>
+<div id="shell" class="hidden">
+  <header class="hero">
+    <div class="topnav">
+      <a class="logo" href="#/dashboard"><span id="company">Lab Telecom</span></a>
+      <button class="burger" id="burger">&#9776;</button>
+      <nav id="nav">
+        <a href="#/dashboard" data-r="dashboard">Dashboard</a>
+        <a href="#/unconfigured" data-r="unconfigured">Unconfigured <span class="badge" id="waitBadge"></span></a>
+        <a href="#/configured" data-r="configured">Configured</a>
+        <a href="#/graphs" data-r="graphs">Graphs</a>
+        <a href="#/events" data-r="events">Events</a>
+        <a href="#/diagnostics" data-r="diagnostics">Diagnostics</a>
+        <a href="#/reports" data-r="reports">Reports</a>
+        <a href="#/cli" data-r="cli">OLT CLI</a>
+        <a href="#/settings" data-r="settings">Settings</a>
+        <a href="#/learn" data-r="learn">Learn</a>
+        <a href="javascript:void(0)" id="logout">Logout</a>
+      </nav>
+    </div>
+  </header>
+  <main id="page" class="page"></main>
+</div>
+<div id="modalRoot"></div>
+<div id="toasts" class="toasts"></div>
+<div id="cmdPanel" class="cmd-panel hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>

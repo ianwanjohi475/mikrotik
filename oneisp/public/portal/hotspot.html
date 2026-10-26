@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WiFi - Buy package</title><link rel="stylesheet" href="/portal/portal.css"></head>
+<body><div class="box">
+<h1 id="co">WiFi</h1><div class="muted" id="site"></div>
+<div class="tabs"><div class="on" data-t="buy">Buy package</div><div data-t="voucher">Voucher</div></div>
+<div id="buy"><h2>Choose a package</h2><div id="pkgs"></div>
+<input id="phone" placeholder="M-Pesa phone e.g. 0712345678" inputmode="tel">
+<button id="payBtn">Pay with M-Pesa</button></div>
+<div id="voucher" style="display:none"><h2>Have a voucher?</h2><input id="code" placeholder="Voucher code" style="text-transform:uppercase"><button id="vBtn">Connect</button></div>
+<div id="msg"></div>
+<form id="login" method="post" style="display:none"><input type="hidden" name="username"><input type="hidden" name="password"><input type="hidden" name="dst"></form>
+<p class="muted" style="margin-top:16px">Simulator: payment auto-approves after 4 seconds. When opened from a real MikroTik hotspot the page logs you in automatically.</p>
+</div>
+<script>
+const q = Object.fromEntries(new URLSearchParams(location.search));
+const $ = s => document.querySelector(s);
+let pick = null, cur = 'KES';
+const msg = (t, c = 'info') => $('#msg').innerHTML = `<div class="msg ${c}">${t}</div>`;
+async function post(u, b) { const r = await fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }); const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; }
+function loginRouter(u, p, exp) {
+  msg(`Connected! Username <b>${u}</b> password <b>${p}</b>${exp ? `<br>Valid until ${new Date(exp).toLocaleString()}` : ''}`, 'ok');
+  if (q.login) { const f = $('#login'); f.action = q.login; f.username.value = u; f.password.value = p; f.dst.value = q.dst || 'http://neverssl.com'; setTimeout(() => f.submit(), 1200); }
+}
+fetch('/api/portal/site/' + (q.site || 1)).then(r => r.json()).then(d => {
+  if (d.error) return msg(d.error, 'bad');
+  cur = d.currency; $('#co').textContent = d.company; $('#site').textContent = d.site.name + ' WiFi';
+  $('#pkgs').innerHTML = d.packages.map(p => `<div class="pkg" data-id="${p.id}"><div><b>${p.name}</b><div class="muted">${p.download} speed &middot; ${p.sharedUsers} device(s)</div></div><b>${cur} ${p.price}</b></div>`).join('');
+  document.querySelectorAll('.pkg').forEach(el => el.onclick = () => { document.querySelectorAll('.pkg').forEach(x => x.classList.remove('sel')); el.classList.add('sel'); pick = el.dataset.id; });
+});
+document.querySelectorAll('.tabs div').forEach(t => t.onclick = () => { document.querySelectorAll('.tabs div').forEach(x => x.classList.toggle('on', x === t)); $('#buy').style.display = t.dataset.t === 'buy' ? '' : 'none'; $('#voucher').style.display = t.dataset.t === 'voucher' ? '' : 'none'; });
+$('#payBtn').onclick = async () => {
+  if (!pick) return msg('Pick a package', 'bad');
+  $('#payBtn').disabled = true;
+  try {
+    const t = await post('/api/portal/hotspot/pay', { siteId: q.site || 1, packageId: pick, phone: $('#phone').value, mac: q.mac });
+    msg(t.message);
+    const poll = setInterval(async () => {
+      const s = await (await fetch('/api/portal/txn/' + t.id)).json();
+      if (s.status === 'success') { clearInterval(poll); loginRouter(s.username, s.password, s.expiresAt); $('#payBtn').disabled = false; }
+      if (s.status === 'failed') { clearInterval(poll); msg(s.message, 'bad'); $('#payBtn').disabled = false; }
+    }, 1500);
+  } catch (e) { msg(e.message, 'bad'); $('#payBtn').disabled = false; }
+};
+$('#vBtn').onclick = async () => { try { const r = await post('/api/portal/voucher', { code: $('#code').value, mac: q.mac }); loginRouter(r.username, r.password, r.expiresAt); } catch (e) { msg(e.message, 'bad'); } };
+</script></body></html>
